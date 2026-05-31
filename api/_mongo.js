@@ -42,7 +42,9 @@ export async function getDb() {
 }
 
 export function sendJson(res, statusCode, payload) {
-  res.status(statusCode).json(payload);
+  res.statusCode = statusCode;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(payload));
 }
 
 export function normalizeDocument(doc) {
