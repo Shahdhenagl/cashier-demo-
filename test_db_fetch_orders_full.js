@@ -1,5 +1,6 @@
-const url = 'https://gynfppklsussrhpsovic.supabase.co/rest/v1/orders?select=id,total,order_items(quantity,returned_quantity,sale_price,products(name,purchase_price))';
-const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd5bmZwcGtsc3Vzc3JocHNvdmljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczMzQ5NDgsImV4cCI6MjA5MjkxMDk0OH0.1NXnbstnLlyyIqHfQ9IKWQc1zNkqnWh9hVX4Uz3jfLc';
+const supabaseUrl = process.env.SUPABASE_URL || 'https://your-project-ref.supabase.co';
+const key = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
+const url = `${supabaseUrl}/rest/v1/orders?select=id,total,order_items(quantity,returned_quantity,sale_price,products(name,purchase_price))`;
 
 fetch(url, {
   headers: {

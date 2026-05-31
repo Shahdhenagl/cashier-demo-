@@ -1,8 +1,11 @@
 const { createClient } = require('@supabase/supabase-js');
 
+const supabaseUrl = process.env.SUPABASE_URL || 'https://your-project-ref.supabase.co';
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'your-supabase-anon-key';
+
 const supabase = createClient(
-  'https://gynfppklsussrhpsovic.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd5bmZwcGtsc3Vzc3JocHNvdmljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczMzQ5NDgsImV4cCI6MjA5MjkxMDk0OH0.1NXnbstnLlyyIqHfQ9IKWQc1zNkqnWh9hVX4Uz3jfLc'
+  supabaseUrl,
+  supabaseAnonKey
 );
 
 async function testUpdate() {
