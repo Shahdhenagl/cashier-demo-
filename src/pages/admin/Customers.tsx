@@ -1,0 +1,659 @@
+import { useState } from 'react';
+import { useStore } from '../../store/useStore';
+import { Search, FileText, Table as TableIcon, User, Eye, Printer, X, TrendingUp, Wallet, ArrowRightLeft, CreditCard } from 'lucide-react';
+import { normalizeArabic } from '../../utils/textUtils';
+import * as XLSX from 'xlsx';
+
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
+
+export default function Customers() {
+  const { customers, orders, storeSettings } = useStore();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({ name: '', phone: '', custom_id: '' });
+  const [paymentForm, setPaymentForm] = useState({
+    cash: '',
+    visa: '',
+    wallet: '',
+    instapay: '',
+    note: ''
+  });
+  const { updateCustomer, checkout } = useStore();
+
+  const filteredCustomers = customers.filter(c => 
+    normalizeArabic(c.name).includes(normalizeArabic(searchQuery)) || 
+    c.phone.includes(searchQuery) ||
+    (c.custom_id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.id.substring(0, 8).toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+
+  const getCustomerMetrics = (customerId: string) => {
+    const customerOrders = orders.filter(o => o.customer?.id === customerId);
+    
+    const totalReturns = customerOrders.reduce((sum, o) => {
+      return sum + o.items.reduce((iSum, item) => iSum + (item.returned_quantity * item.sale_price), 0);
+    }, 0);
+
+    const totalSpent = customerOrders.reduce((sum, o) => {
+      if (o.type === 'payment') return sum;
+      return sum + o.total;
+    }, 0);
+
+    const totalProfit = customerOrders.reduce((sum, o) => {
+      if (o.type === 'payment') return sum;
+      return sum + o.items.reduce((itemSum, item) => {
+        const netQty = item.quantity - item.returned_quantity;
+        return itemSum + (item.sale_price - item.purchase_price) * netQty;
+      }, 0);
+    }, 0);
+
+    // Debt = Original Total - Paid Amount (Returns are cash payout, don't affect debt)
+    const totalDebt = Math.max(0, customerOrders.reduce((sum, o) => {
+      const effectiveTotal = o.type === 'payment' ? 0 : o.total;
+      return sum + (effectiveTotal - o.paid_amount);
+    }, 0));
+
+    return { customerOrders, totalSpent, totalProfit, totalDebt, totalReturns };
+  };
+
+  const exportExcel = () => {
+    const wsData = [
+      ['سجل العملاء', '', '', '', '', '', '', '', ''],
+      ['التاريخ', new Date().toLocaleDateString(), '', '', '', '', '', '', ''],
+      [''],
+      ['الاسم', 'رقم الهاتف', 'عدد الطلبات', 'إجمالي المشتريات (صافي)', 'إجمالي المرتجعات', 'المديونية الحالية', 'إجمالي الربح', 'تاريخ التسجيل'],
+      ...filteredCustomers.map(c => {
+        const metrics = getCustomerMetrics(c.id);
+        return [
+          c.name,
+          c.phone,
+          metrics.customerOrders.length,
+          metrics.totalSpent,
+          metrics.totalReturns,
+          metrics.totalDebt,
+          metrics.totalProfit,
+          new Date(c.timestamp).toLocaleDateString('ar-SA')
+        ];
+      })
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Customers');
+    XLSX.writeFile(wb, `customers_report_${new Date().toLocaleDateString()}.xlsx`);
+  };
+
+  const exportPDF = async () => {
+    const element = document.getElementById('customers-table');
+    if (!element) return;
+    const canvas = await html2canvas(element, { scale: 2 });
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    pdf.save(`customers_report_${new Date().toLocaleDateString()}.pdf`);
+  };
+
+  const exportCustomerStatementPDF = async () => {
+    const element = document.getElementById('customer-profile-modal');
+    if (!element) return;
+    const canvas = await html2canvas(element, { scale: 2, useCORS: true });
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    pdf.save(`statement_${selectedCustomer.name}_${new Date().toLocaleDateString()}.pdf`);
+  };
+
+  const handleOpenProfile = (customer: any) => {
+    const metrics = getCustomerMetrics(customer.id);
+    setSelectedCustomer({ ...customer, ...metrics });
+    setEditForm({ name: customer.name, phone: customer.phone, custom_id: customer.custom_id || '' });
+    setIsEditMode(false);
+    setIsModalOpen(true);
+  };
+
+  const handleUpdateCustomer = async () => {
+    try {
+      await updateCustomer(selectedCustomer.id, editForm);
+      setSelectedCustomer({ ...selectedCustomer, ...editForm });
+      setIsEditMode(false);
+      alert("تم تحديث بيانات العميل بنجاح");
+    } catch (e: any) {
+      alert("خطأ في التحديث: " + e.message);
+    }
+  };
+
+  const handlePayDebt = async () => {
+    const cash = parseFloat(paymentForm.cash) || 0;
+    const visa = parseFloat(paymentForm.visa) || 0;
+    const wallet = parseFloat(paymentForm.wallet) || 0;
+    const insta = parseFloat(paymentForm.instapay) || 0;
+    const totalPaid = cash + visa + wallet + insta;
+
+    if (totalPaid <= 0) return alert("يرجى إدخال مبلغ السداد");
+
+    try {
+      await checkout(
+        0, 
+        { name: selectedCustomer.name, phone: selectedCustomer.phone, custom_id: selectedCustomer.custom_id },
+        totalPaid,
+        'payment',
+        cash >= visa ? 'cash' : 'visa',
+        { cash, visa, wallet, instapay: insta }
+      );
+      
+      alert("تم تسجيل السداد بنجاح");
+      setIsPaymentModalOpen(false);
+      setPaymentForm({ cash: '', visa: '', wallet: '', instapay: '', note: '' });
+      
+      // Refresh metrics
+      const metrics = getCustomerMetrics(selectedCustomer.id);
+      setSelectedCustomer({ ...selectedCustomer, ...metrics });
+    } catch (e: any) {
+      alert("خطأ في تسجيل السداد: " + e.message);
+    }
+  };
+
+  const handlePrintInvoice = (order: any) => {
+    const printDate = new Date(order.date).toLocaleString('ar-SA');
+    const isPayment = order.type === 'payment';
+    
+    let itemsHtml = '';
+    if (isPayment) {
+      itemsHtml = `<tr>
+        <td colspan="2" style="padding:12px 4px;border-bottom:1px dashed #ddd;font-size:14px;font-weight:bold;">سداد مديونية سابقة</td>
+        <td style="padding:12px 4px;border-bottom:1px dashed #ddd;text-align:left;font-size:14px;font-weight:bold;">${order.paid_amount.toFixed(2)}</td>
+      </tr>`;
+    } else {
+      itemsHtml = order.items.map((item: any) =>
+        `<tr>
+          <td style="padding:6px 4px;border-bottom:1px dashed #ddd;font-size:13px;">${item.name}${item.returned_quantity > 0 ? ` <span style="color:red;font-size:10px;">(مرتجع: ${item.returned_quantity})</span>` : ''}</td>
+          <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:center;font-size:13px;">${item.quantity}</td>
+          <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:left;font-size:13px;">${(item.sale_price * item.quantity).toFixed(2)}</td>
+        </tr>`
+      ).join('');
+    }
+
+    const html = `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8"/>
+  <title>فاتورة #${order.id}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'Segoe UI',Arial,sans-serif;background:#fff;color:#111;width:320px;margin:0 auto;padding:16px;}
+    .header{text-align:center;border-bottom:2px dashed #333;padding-bottom:12px;margin-bottom:12px;}
+    .logo{width:64px;height:64px;object-fit:cover;border-radius:12px;margin-bottom:6px;}
+    .store-name{font-size:18px;font-weight:900;margin-bottom:4px;}
+    .store-info{font-size:11px;color:#555;line-height:1.7;}
+    .invoice-meta{display:flex;justify-content:space-between;font-size:11px;color:#555;margin:8px 0;background:#f5f5f5;padding:6px 8px;border-radius:6px;}
+    table{width:100%;border-collapse:collapse;}
+    thead th{font-size:12px;color:#888;padding:4px;border-bottom:2px solid #eee;text-align:right;}
+    thead th:last-child{text-align:left;}
+    .totals{margin-top:10px;border-top:2px dashed #333;padding-top:10px;}
+    .total-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;}
+    .grand-total{font-size:17px;font-weight:900;border-top:1px solid #ddd;margin-top:6px;padding-top:8px;}
+    .footer{text-align:center;margin-top:16px;font-size:12px;color:#888;}
+    @media print{@page{margin:4mm;size:80mm auto;}}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img class="logo" src="${storeSettings.logo}" onerror="this.style.display='none'" />
+    <div class="store-name">${storeSettings.name}</div>
+  </div>
+  <div class="invoice-meta">
+    <span>رقم: <strong>${order.id}</strong></span>
+    <span>ID العميل: <strong>${order.customer?.custom_id || order.customer?.id.substring(0, 8) || '—'}</strong></span>
+    <span>${printDate}</span>
+  </div>
+  <table>
+    <thead><tr><th>الصنف</th><th style="text-align:center">كمية</th><th style="text-align:left">إجمالي</th></tr></thead>
+    <tbody>${itemsHtml}</tbody>
+  </table>
+  <div class="totals">
+    <div class="total-row grand-total"><span>الإجمالي:</span><span>${order.total.toFixed(2)}</span></div>
+    <div class="total-row"><span>المدفوع:</span><span>${order.paid_amount.toFixed(2)}</span></div>
+  </div>
+  <div class="footer">شكراً لزيارتكم</div>
+  <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
+</body></html>`;
+
+    const pw = window.open('', '_blank', 'width=400,height=600');
+    if (pw) { pw.document.write(html); pw.document.close(); }
+  };
+
+  return (
+    <div className="p-8 max-w-7xl mx-auto">
+      <div className="flex justify-between items-end mb-8">
+        <div>
+          <h1 className="text-3xl font-black text-slate-800 flex items-center gap-3">
+            <User style={{ color: storeSettings.themeColor }} size={32} />
+            قاعدة العملاء
+          </h1>
+          <p className="text-slate-500 mt-2 font-medium">إدارة بيانات العملاء، سجل المشتريات، والمديونيات المعلقة</p>
+        </div>
+        <div className="flex gap-3">
+          <button 
+            onClick={exportExcel}
+            className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg hover:shadow-emerald-200"
+          >
+            <TableIcon size={18} /> Excel
+          </button>
+          <button 
+            onClick={exportPDF}
+            className="flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-red-700 transition shadow-lg hover:shadow-red-200"
+          >
+            <FileText size={18} /> PDF
+          </button>
+        </div>
+      </div>
+
+      <div id="customers-table" className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden flex flex-col min-h-[500px]">
+        <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+          <div className="relative w-1/3 min-w-[350px]">
+            <Search className="absolute right-4 top-3 text-slate-400" size={20} />
+            <input
+              type="text"
+              placeholder="ابحث باسم العميل، رقم الهاتف، أو الـ ID..."
+              style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+              className="w-full bg-white border border-slate-200 rounded-xl py-2.5 pr-12 pl-4 text-sm focus:outline-none focus:ring-2 shadow-sm transition-all"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <div 
+            style={{ backgroundColor: storeSettings.themeColor + '15', color: storeSettings.themeColor, borderColor: storeSettings.themeColor + '30' }}
+            className="text-sm font-bold border px-4 py-2 rounded-xl"
+          >
+            إجمالي العملاء: {filteredCustomers.length} عميل
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-x-auto">
+          <table className="w-full text-right text-sm">
+            <thead className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase tracking-wider">
+              <tr>
+                <th className="p-5">العميل</th>
+                <th className="p-5">رقم الهاتف</th>
+                <th className="p-5 text-center">الطلبات</th>
+                <th className="p-5 text-center">صافي المشتريات</th>
+                <th className="p-5 text-center">المرتجعات</th>
+                <th className="p-5 text-center">المديونية</th>
+                <th className="p-5 text-center">تاريخ التسجيل</th>
+                <th className="p-5 text-left">إجراءات</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-slate-700">
+              {filteredCustomers.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="p-20 text-center text-slate-400">
+                    <User size={64} className="mx-auto mb-4 opacity-20" />
+                    <p className="text-xl font-bold">لا يوجد عملاء مسجلين حالياً</p>
+                  </td>
+                </tr>
+              ) : (
+                filteredCustomers.map((customer) => {
+                  const { customerOrders, totalSpent, totalDebt, totalReturns } = getCustomerMetrics(customer.id);
+                  return (
+                    <tr key={customer.id} className="hover:bg-slate-50/50 transition">
+                      <td className="p-5">
+                        <div className="flex items-center gap-3">
+                          <div 
+                            style={{ backgroundColor: storeSettings.themeColor + '20', color: storeSettings.themeColor }}
+                            className="w-10 h-10 rounded-full flex items-center justify-center font-black text-lg"
+                          >
+                            {customer.name.charAt(0)}
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="font-black text-slate-800">{customer.name}</span>
+                            <span className="text-[10px] text-indigo-600 font-black font-mono">ID: {customer.custom_id || customer.id.substring(0, 8)}</span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-5 font-mono font-bold text-slate-500" dir="ltr">{customer.phone}</td>
+                      <td className="p-5 text-center">
+                        <span style={{ backgroundColor: storeSettings.themeColor + '15', color: storeSettings.themeColor }} className="px-3 py-1.5 rounded-lg font-bold">
+                          {customerOrders.length} طلب
+                        </span>
+                      </td>
+                      <td className="p-5 text-center font-black text-slate-900">
+                        {totalSpent.toLocaleString()} <span className="text-[10px] text-slate-400 font-normal">{storeSettings.currency}</span>
+                      </td>
+                      <td className="p-5 text-center font-bold text-orange-600">
+                        {totalReturns > 0 ? `${totalReturns.toLocaleString()} ${storeSettings.currency}` : '-'}
+                      </td>
+                      <td className="p-5 text-center">
+                        {totalDebt > 0 ? (
+                          <span className="bg-red-50 text-red-600 px-3 py-1.5 rounded-xl font-black border border-red-100">
+                            {totalDebt.toLocaleString()} <span className="text-[10px] font-normal">{storeSettings.currency}</span>
+                          </span>
+                        ) : (
+                          <span className="text-emerald-500 font-bold">خالص</span>
+                        )}
+                      </td>
+                      <td className="p-5 text-center text-slate-500 font-medium">
+                        {new Date(customer.timestamp).toLocaleDateString('ar-SA')}
+                      </td>
+                      <td className="p-5 text-left">
+                        <button 
+                          onClick={() => handleOpenProfile(customer)}
+                          style={{ backgroundColor: storeSettings.themeColor + '15', color: storeSettings.themeColor }}
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold hover:bg-opacity-25 transition-all shadow-sm"
+                        >
+                          <Eye size={16} /> ملف العميل
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Customer Profile Modal */}
+      {isModalOpen && selectedCustomer && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div id="customer-profile-modal" className="bg-white rounded-[40px] shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-300">
+            {/* Modal Header */}
+            <div className="p-8 flex justify-between items-center border-b border-slate-100 relative overflow-hidden bg-white">
+               <div 
+                className="absolute top-0 right-0 w-32 h-32 opacity-5 pointer-events-none"
+                style={{ backgroundColor: storeSettings.themeColor, borderRadius: '0 0 0 100%' }}
+              />
+              <div className="flex gap-4 items-center">
+                <div 
+                  style={{ backgroundColor: storeSettings.themeColor, boxShadow: `0 8px 16px ${storeSettings.themeColor}30` }}
+                  className="w-16 h-16 rounded-2xl flex items-center justify-center text-white text-2xl font-black shrink-0"
+                >
+                  {selectedCustomer.name.charAt(0)}
+                </div>
+                
+                <div className="flex items-center gap-4 flex-wrap">
+                  {isEditMode ? (
+                    <div className="flex flex-col gap-2">
+                      <input 
+                        className="text-xl font-black text-slate-800 border-b-2 border-indigo-500 focus:outline-none"
+                        value={editForm.name}
+                        onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                      />
+                      <div className="flex gap-4">
+                         <input 
+                          className="bg-slate-100 px-2 py-1 rounded-lg text-slate-600 font-bold focus:outline-none text-sm"
+                          value={editForm.phone}
+                          onChange={e => setEditForm({ ...editForm, phone: e.target.value })}
+                        />
+                        <input 
+                          placeholder="رقم الكارت ID"
+                          className="bg-indigo-50 px-2 py-1 rounded-lg text-indigo-600 font-mono font-black border border-indigo-200 focus:outline-none text-sm"
+                          value={editForm.custom_id}
+                          onChange={e => setEditForm({ ...editForm, custom_id: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col md:flex-row md:items-center gap-x-4 gap-y-1">
+                      <h2 className="text-xl font-black text-slate-800 whitespace-nowrap">{selectedCustomer.name}</h2>
+                      <div className="hidden md:block w-px h-4 bg-slate-200" />
+                      <div className="flex items-center gap-3 text-slate-500 font-bold text-xs flex-wrap">
+                        <span className="flex items-center gap-1"><CreditCard size={12} /> {selectedCustomer.phone}</span>
+                        <span className="w-1 h-1 rounded-full bg-slate-300" />
+                        <span className="bg-indigo-50 px-2 py-0.5 rounded-lg text-indigo-600 font-mono font-black border border-indigo-100 text-[10px]">ID: {selectedCustomer.custom_id || selectedCustomer.id.substring(0, 8)}</span>
+                        <span className="w-1 h-1 rounded-full bg-slate-300" />
+                        <span className="text-[10px] whitespace-nowrap">سجل منذ: {new Date(selectedCustomer.timestamp).toLocaleDateString('ar-SA')}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 items-center">
+                {isEditMode ? (
+                  <>
+                    <button 
+                      onClick={() => setIsEditMode(false)}
+                      className="bg-slate-100 text-slate-600 px-4 py-2 rounded-xl font-bold hover:bg-slate-200 transition text-sm"
+                    >
+                      إلغاء
+                    </button>
+                    <button 
+                      onClick={handleUpdateCustomer}
+                      className="bg-emerald-600 text-white flex items-center gap-2 px-4 py-2 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg shadow-emerald-100 text-sm"
+                    >
+                      حفظ التعديلات
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button 
+                      onClick={() => setIsEditMode(true)}
+                      className="bg-slate-800 text-white flex items-center gap-2 px-4 py-2 rounded-xl font-bold hover:bg-black transition shadow-lg text-sm"
+                    >
+                      تعديل البيانات
+                    </button>
+                    <button 
+                      onClick={exportCustomerStatementPDF}
+                      className="bg-indigo-600 text-white flex items-center gap-2 px-4 py-2 rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-100 text-sm"
+                    >
+                      <FileText size={16} /> تحميل بيان حساب
+                    </button>
+                  </>
+                )}
+                <button 
+                  onClick={() => setIsModalOpen(false)}
+                  className="bg-slate-100 text-slate-400 hover:text-slate-600 p-2 rounded-xl transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-8 bg-slate-50/50">
+              {/* Stats Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                    <TrendingUp size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 mb-0.5">صافي المشتريات</p>
+                    <p className="text-lg font-black text-slate-800">{selectedCustomer.totalSpent.toLocaleString()} {storeSettings.currency}</p>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-2xl bg-orange-50 text-orange-600 flex items-center justify-center">
+                    <ArrowRightLeft size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 mb-0.5">إجمالي المرتجعات</p>
+                    <p className="text-lg font-black text-orange-600">{selectedCustomer.totalReturns.toLocaleString()} {storeSettings.currency}</p>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <Wallet size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 mb-0.5">صافي الربح</p>
+                    <p className="text-lg font-black text-emerald-600">{selectedCustomer.totalProfit.toLocaleString()} {storeSettings.currency}</p>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center">
+                    <CreditCard size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 mb-0.5">المديونية الحالية</p>
+                    <p className={`text-lg font-black ${selectedCustomer.totalDebt <= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {selectedCustomer.totalDebt.toLocaleString()} {storeSettings.currency}
+                    </p>
+                  </div>
+                  {selectedCustomer.totalDebt > 0 && (
+                    <button 
+                      onClick={() => setIsPaymentModalOpen(true)}
+                      className="mr-auto bg-red-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-lg shadow-red-100 hover:bg-red-700 transition"
+                    >
+                      سداد مبلغ
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* PAYMENT SUB-MODAL */}
+              {isPaymentModalOpen && (
+                <div className="mb-8 bg-white p-6 rounded-[32px] border-2 border-indigo-500 shadow-xl animate-in slide-in-from-top-4 duration-300">
+                  <div className="flex justify-between items-center mb-6">
+                    <h4 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                      <Wallet className="text-indigo-600" size={24} />
+                      تسجيل سداد مديونية
+                    </h4>
+                    <button onClick={() => setIsPaymentModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+                      <X size={20} />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase tracking-wider text-right">💵 كاش</label>
+                      <input 
+                        type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 focus:ring-1 focus:outline-none font-bold text-right"
+                        value={paymentForm.cash}
+                        onChange={e => setPaymentForm({...paymentForm, cash: e.target.value})}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase tracking-wider text-right">💳 فيزا</label>
+                      <input 
+                        type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 focus:ring-1 focus:outline-none font-bold text-right"
+                        value={paymentForm.visa}
+                        onChange={e => setPaymentForm({...paymentForm, visa: e.target.value})}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase tracking-wider text-right">📱 محفظة</label>
+                      <input 
+                        type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 focus:ring-1 focus:outline-none font-bold text-right"
+                        value={paymentForm.wallet}
+                        onChange={e => setPaymentForm({...paymentForm, wallet: e.target.value})}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 mb-1 uppercase tracking-wider text-right">⚡ انستا باي</label>
+                      <input 
+                        type="number" dir="ltr" placeholder="0.00"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 focus:ring-1 focus:outline-none font-bold text-right"
+                        value={paymentForm.instapay}
+                        onChange={e => setPaymentForm({...paymentForm, instapay: e.target.value})}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-slate-400">إجمالي المبلغ المدفوع</span>
+                      <span className="text-2xl font-black text-indigo-600">
+                        {((parseFloat(paymentForm.cash) || 0) + (parseFloat(paymentForm.visa) || 0) + (parseFloat(paymentForm.wallet) || 0) + (parseFloat(paymentForm.instapay) || 0)).toLocaleString()} {storeSettings.currency}
+                      </span>
+                    </div>
+                    <button 
+                      onClick={handlePayDebt}
+                      className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black shadow-lg hover:bg-indigo-700 transition flex items-center gap-2"
+                    >
+                      تأكيد السداد
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Orders History Table */}
+              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+                <div className="p-5 border-b border-slate-50 flex items-center gap-2">
+                  <FileText className="text-slate-400" size={18} />
+                  <h3 className="font-black text-slate-800">سجل الطلبات والفواتير</h3>
+                </div>
+                <table className="w-full text-right text-sm">
+                  <thead className="bg-slate-50 text-slate-400 font-bold">
+                    <tr>
+                      <th className="p-4">رقم الفاتورة</th>
+                      <th className="p-4">التاريخ</th>
+                      <th className="p-4">النوع</th>
+                      <th className="p-4 text-center">صافي الفاتورة</th>
+                      <th className="p-4 text-center">المدفوع</th>
+                      <th className="p-4 text-center">الحالة</th>
+                      <th className="p-4 text-left">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50 text-slate-600">
+                    {selectedCustomer.customerOrders.length === 0 ? (
+                      <tr><td colSpan={7} className="p-10 text-center text-slate-400 font-bold">لا يوجد فواتير سابقة لهذا العميل</td></tr>
+                    ) : (
+                      selectedCustomer.customerOrders.map((order: any) => {
+                        const returnedValue = order.items.reduce((sum: number, i: any) => sum + (i.returned_quantity * i.sale_price), 0);
+                        const netTotal = order.total - returnedValue;
+                        // Debt is based on the original invoice total vs paid — returns are cash refunds, NOT debt reductions
+                        const rowDebt = order.total - order.paid_amount;
+                        const isDebt = rowDebt > 0;
+                        const isPayment = order.type === 'payment';
+                        
+                        return (
+                          <tr key={order.id} className="hover:bg-slate-50 transition">
+                            <td className="p-4 font-mono font-bold text-slate-800">#{order.id}</td>
+                            <td className="p-4 text-xs font-medium">{new Date(order.date).toLocaleDateString('ar-SA')}</td>
+                            <td className="p-4">
+                              {isPayment ? (
+                                <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded text-[10px] font-bold">سداد آجل</span>
+                              ) : (
+                                <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded text-[10px] font-bold">فاتورة بيع</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-center font-bold text-slate-900">{netTotal.toLocaleString()}</td>
+                            <td className="p-4 text-center font-bold text-emerald-600">{order.paid_amount.toLocaleString()}</td>
+                            <td className="p-4 text-center">
+                              {isPayment ? (
+                                <span className="text-indigo-500 text-[10px] font-bold">مكتمل</span>
+                              ) : isDebt ? (
+                                <span className="text-red-500 text-[10px] font-bold">
+                                  غير مكتملة
+                                </span>
+                              ) : rowDebt < 0 ? (
+                                <span className="text-emerald-600 text-[10px] font-bold">رصيد متبقي</span>
+                              ) : (
+                                <span className="text-emerald-500 text-[10px] font-bold">مدفوعة بالكامل</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-left">
+                              <button 
+                                onClick={() => handlePrintInvoice(order)}
+                                style={{ color: storeSettings.themeColor }}
+                                className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+                                title="طباعة"
+                              >
+                                <Printer size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

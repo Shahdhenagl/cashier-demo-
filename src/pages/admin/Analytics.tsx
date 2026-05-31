@@ -1,0 +1,492 @@
+import { useState, useEffect, useMemo } from 'react';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList
+} from 'recharts';
+import { 
+  TrendingUp, TrendingDown, DollarSign, Package, Users, 
+  FileText, Table as TableIcon, RefreshCw
+} from 'lucide-react';
+import { useStore } from '../../store/useStore';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
+import html2canvas from 'html2canvas';
+
+// Fix for jspdf-autotable typing
+declare module 'jspdf' {
+  interface jsPDF {
+    autoTable: (options: any) => jsPDF;
+    lastAutoTable: {
+      finalY: number;
+    };
+  }
+}
+
+export default function Analytics() {
+  const { storeSettings, loadAnalyticsData, purchaseInvoices, products, expenses } = useStore();
+  const [orders, setOrders] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [timeRange, setTimeRange] = useState<'7d' | '30d' | 'thisMonth' | 'thisYear' | 'all'>('30d');
+
+  useEffect(() => {
+    fetchData();
+  }, [timeRange]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    let start: string | undefined;
+    const now = new Date();
+
+    if (timeRange === '7d') {
+      const d = new Date();
+      d.setDate(d.getDate() - 7);
+      start = d.toISOString();
+    } else if (timeRange === '30d') {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      start = d.toISOString();
+    } else if (timeRange === 'thisMonth') {
+      start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    } else if (timeRange === 'thisYear') {
+      start = new Date(now.getFullYear(), 0, 1).toISOString();
+    }
+
+    const data = await loadAnalyticsData(start);
+    setOrders(data);
+    setLoading(false);
+  };
+
+  // ── Calculations ─────────────────────────────────────────────
+  const stats = useMemo(() => {
+    let revenue = 0;
+    let cost = 0;
+    let productsMap: Record<string, { name: string, qty: number, profit: number, revenue: number }> = {};
+    let customersMap: Record<string, { name: string, total: number, orders: number }> = {};
+
+    orders.forEach(order => {
+      if (order.type === 'payment') return; // Skip payments for sales analytics
+
+      let netOrderTotal = 0;
+      
+      order.items.forEach((item: any) => {
+        const qty = item.quantity - item.returned_quantity;
+        const itemRevenue = item.sale_price * qty;
+        const itemCost = item.average_purchase_price * qty; // Note: using average_purchase_price here for Branch 1
+        cost += itemCost;
+        netOrderTotal += itemRevenue;
+
+        if (!productsMap[item.id]) {
+          productsMap[item.id] = { name: item.name, qty: 0, profit: 0, revenue: 0 };
+        }
+        productsMap[item.id].qty += qty;
+        productsMap[item.id].revenue += itemRevenue;
+        productsMap[item.id].profit += (itemRevenue - itemCost);
+      });
+
+      revenue += netOrderTotal;
+
+      if (order.customer) {
+        if (!customersMap[order.customer.id]) {
+          customersMap[order.customer.id] = { name: order.customer.name, total: 0, orders: 0 };
+        }
+        customersMap[order.customer.id].total += netOrderTotal;
+        customersMap[order.customer.id].orders += 1;
+      }
+    });
+
+    const profit = revenue - cost;
+    const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+
+    const topProductsByQty = Object.values(productsMap)
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 10);
+
+    const topProductsByProfit = Object.values(productsMap)
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, 10);
+
+    const topCustomers = Object.values(customersMap)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+
+    const procurementCost = purchaseInvoices.reduce((sum, inv) => sum + inv.total, 0);
+    const totalInventoryValue = products.reduce((sum, p) => sum + (p.stock_quantity * (p.average_purchase_price || p.purchase_price || 0)), 0);
+
+    // Calculate time-filtered expenses
+    let startLimit: Date | null = null;
+    const now = new Date();
+    if (timeRange === '7d') {
+      startLimit = new Date();
+      startLimit.setDate(startLimit.getDate() - 7);
+    } else if (timeRange === '30d') {
+      startLimit = new Date();
+      startLimit.setDate(startLimit.getDate() - 30);
+    } else if (timeRange === 'thisMonth') {
+      startLimit = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else if (timeRange === 'thisYear') {
+      startLimit = new Date(now.getFullYear(), 0, 1);
+    }
+
+    const filteredExpenses = expenses.filter(exp => {
+      if (!startLimit) return true;
+      const expDate = new Date(exp.date);
+      return expDate >= startLimit;
+    });
+
+    const totalExpenses = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
+    const finalNetProfit = profit - totalExpenses;
+
+    return { 
+      revenue, cost, profit, margin, 
+      orderCount: orders.filter(o => o.type === 'sale').length,
+      topProductsByQty, 
+      topProductsByProfit, 
+      topCustomers,
+      procurementCost,
+      totalInventoryValue,
+      totalExpenses,
+      finalNetProfit
+    };
+  }, [orders, expenses, purchaseInvoices, products, timeRange]);
+
+  // ── Export Logic ─────────────────────────────────────────────
+  const exportExcel = () => {
+    const wsData = [
+      ['تقرير التحليلات', '', '', ''],
+      ['الفترة', timeRange, '', ''],
+      [''],
+      ['ملخص عام', '', '', ''],
+      ['إجمالي المبيعات', stats.revenue, storeSettings.currency, ''],
+      ['إجمالي التكلفة', stats.cost, storeSettings.currency, ''],
+      ['إجمالي الربح (مجمل)', stats.profit, storeSettings.currency, ''],
+      ['إجمالي المصاريف والتكاليف', stats.totalExpenses, storeSettings.currency, ''],
+      ['صافي الربح النهائي', stats.finalNetProfit, storeSettings.currency, ''],
+      ['هامش الربح', stats.margin.toFixed(2) + '%', '', ''],
+      ['عدد الفواتير', stats.orderCount, '', ''],
+      [''],
+      ['المنتجات الأكثر مبيعاً (كمية)', '', '', ''],
+      ['المنتج', 'الكمية', 'الإيراد', 'الربح'],
+      ...stats.topProductsByQty.map(p => [p.name, p.qty, p.revenue, p.profit]),
+      [''],
+      ['العملاء الأكثر شراءً', '', '', ''],
+      ['العميل', 'إجمالي المشتريات', 'عدد الفواتير', ''],
+      ...stats.topCustomers.map(c => [c.name, c.total, c.orders, ''])
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Analytics');
+    XLSX.writeFile(wb, `analytics_report_${new Date().toLocaleDateString()}.xlsx`);
+  };
+
+  const exportPDF = async () => {
+    const element = document.getElementById('analytics-dashboard');
+    if (!element) return;
+
+    setLoading(true);
+    try {
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#f8fafc' // slate-50
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`analytics_report_${new Date().toLocaleDateString()}.pdf`);
+    } catch (err) {
+      console.error("PDF Export Error:", err);
+      alert("حدث خطأ أثناء تصدير PDF. يرجى المحاولة مرة أخرى.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-8 flex flex-col items-center justify-center min-h-[400px] gap-4">
+        <RefreshCw className="w-12 h-12 text-indigo-600 animate-spin" />
+        <p className="text-slate-500 font-bold">جاري تحليل البيانات...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div id="analytics-dashboard" className="p-4 sm:p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500" dir="rtl">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div>
+          <h1 className="text-3xl font-black text-slate-900 mb-2">التحليلات والتقارير</h1>
+          <p className="text-slate-500 font-medium">نظرة تفصيلية على أداء النشاط التجاري والأرباح</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="bg-white p-1 rounded-xl shadow-sm border border-slate-200 flex gap-1">
+            {[
+              { id: '7d', label: '7 أيام' },
+              { id: '30d', label: '30 يوم' },
+              { id: 'thisMonth', label: 'هذا الشهر' },
+              { id: 'thisYear', label: 'هذه السنة' },
+              { id: 'all', label: 'الكل' },
+            ].map((btn) => (
+              <button
+                key={btn.id}
+                onClick={() => setTimeRange(btn.id as any)}
+                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                  timeRange === btn.id 
+                    ? 'bg-slate-900 text-white shadow-md' 
+                    : 'text-slate-500 hover:bg-slate-50'
+                }`}
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <button 
+              onClick={exportExcel}
+              className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg shadow-emerald-100"
+            >
+              <TableIcon size={18} />
+              Excel
+            </button>
+            <button 
+              onClick={exportPDF}
+              className="flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-red-700 transition shadow-lg shadow-red-100"
+            >
+              <FileText size={18} />
+              PDF
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatCard 
+          title="إجمالي المبيعات" 
+          value={stats.revenue} 
+          unit={storeSettings.currency}
+          icon={TrendingUp} 
+          color="indigo" 
+          increase={true} 
+        />
+        <StatCard 
+          title="صافي الربح" 
+          value={stats.profit} 
+          unit={storeSettings.currency}
+          icon={DollarSign} 
+          color="emerald" 
+          increase={stats.profit > 0} 
+        />
+        <StatCard 
+          title="المصاريف والتكاليف" 
+          value={stats.totalExpenses} 
+          unit={storeSettings.currency}
+          icon={TrendingDown} 
+          color="slate" 
+        />
+        <StatCard 
+          title="صافي الربح النهائي" 
+          value={stats.finalNetProfit} 
+          unit={storeSettings.currency}
+          icon={DollarSign} 
+          color="emerald" 
+          increase={stats.finalNetProfit > 0} 
+        />
+        <StatCard 
+          title="هامش الربح" 
+          value={stats.margin.toFixed(1)} 
+          unit="%" 
+          icon={TrendingUp} 
+          color="amber" 
+        />
+        <StatCard 
+          title="عدد الفواتير" 
+          value={stats.orderCount} 
+          icon={Package} 
+          color="slate" 
+        />
+        <StatCard 
+          title="تكلفة المشتريات" 
+          value={stats.procurementCost} 
+          unit={storeSettings.currency}
+          icon={DollarSign} 
+          color="amber" 
+        />
+        <StatCard 
+          title="قيمة بضاعة المخزن" 
+          value={stats.totalInventoryValue} 
+          unit={storeSettings.currency}
+          icon={Package} 
+          color="indigo" 
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Products Chart */}
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600">
+                <TrendingUp size={20} />
+              </div>
+              <h3 className="font-black text-slate-800 text-lg">المنتجات الأكثر مبيعاً (كمية)</h3>
+            </div>
+          </div>
+          
+          <div className="h-[350px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.topProductsByQty} layout="vertical" margin={{ left: 40 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                <XAxis type="number" hide />
+                <YAxis 
+                  dataKey="name" 
+                  type="category" 
+                  hide
+                />
+                <Tooltip 
+                  cursor={{ fill: '#f8fafc' }}
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Bar dataKey="qty" radius={[0, 8, 8, 0]} barSize={32}>
+                  <LabelList 
+                    dataKey="name" 
+                    position="right" 
+                    offset={10} 
+                    style={{ fill: '#475569', fontWeight: '900', fontSize: '14px' }} 
+                  />
+                  {stats.topProductsByQty.map((_, index) => (
+                    <Cell key={`cell-${index}`} fill={index < 3 ? storeSettings.themeColor : '#94a3b8'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Profit Chart */}
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600">
+                <DollarSign size={20} />
+              </div>
+              <h3 className="font-black text-slate-800 text-lg">المنتجات الأكثر ربحاً (صافي)</h3>
+            </div>
+          </div>
+          
+          <div className="h-[350px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.topProductsByProfit} layout="vertical" margin={{ left: 40 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                <XAxis type="number" hide />
+                <YAxis 
+                  dataKey="name" 
+                  type="category" 
+                  hide
+                />
+                <Tooltip 
+                  cursor={{ fill: '#f8fafc' }}
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Bar dataKey="profit" radius={[0, 8, 8, 0]} barSize={32}>
+                  <LabelList 
+                    dataKey="name" 
+                    position="right" 
+                    offset={10} 
+                    style={{ fill: '#475569', fontWeight: '900', fontSize: '14px' }} 
+                  />
+                  {stats.topProductsByProfit.map((_, index) => (
+                    <Cell key={`cell-${index}`} fill={index < 3 ? '#10b981' : '#cbd5e1'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Top Customers Table */}
+      <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center text-amber-600">
+            <Users size={20} />
+          </div>
+          <h3 className="font-black text-slate-800 text-lg">العملاء الأكثر شراءً</h3>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-right">
+            <thead>
+              <tr className="text-slate-500 text-sm border-b border-slate-100">
+                <th className="pb-4 font-bold">العميل</th>
+                <th className="pb-4 font-bold">إجمالي المشتريات</th>
+                <th className="pb-4 font-bold">عدد الفواتير</th>
+                <th className="pb-4 font-bold">متوسط الفاتورة</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {stats.topCustomers.map((customer, idx) => (
+                <tr key={idx} className="group hover:bg-slate-50 transition-colors">
+                  <td className="py-4 font-bold text-slate-700">{customer.name}</td>
+                  <td className="py-4 font-black text-indigo-600">{customer.total.toLocaleString()} {storeSettings.currency}</td>
+                  <td className="py-4 text-slate-500 font-medium">{customer.orders} فاتورة</td>
+                  <td className="py-4 text-slate-500 font-medium">{(customer.total / customer.orders).toFixed(0).toLocaleString()} {storeSettings.currency}</td>
+                </tr>
+              ))}
+              {stats.topCustomers.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="py-12 text-center text-slate-400 font-bold">لا يوجد بيانات عملاء لهذه الفترة</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ title, value, unit, icon: Icon, color, increase }: any) {
+  const colors: any = {
+    indigo: 'bg-indigo-600',
+    emerald: 'bg-emerald-600',
+    amber: 'bg-amber-500',
+    slate: 'bg-slate-800'
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all group overflow-hidden relative">
+      <div className="absolute -right-4 -top-4 w-24 h-24 bg-slate-50 rounded-full group-hover:scale-150 transition-transform duration-500 -z-0"></div>
+      
+      <div className="relative z-10 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div className={`w-12 h-12 ${colors[color]} rounded-2xl flex items-center justify-center text-white shadow-lg`}>
+            <Icon size={24} />
+          </div>
+          {increase !== undefined && (
+            <div className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg ${increase ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
+              {increase ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+              {increase ? '+12%' : '-5%'} 
+            </div>
+          )}
+        </div>
+        
+        <div>
+          <p className="text-slate-500 font-bold text-sm mb-1">{title}</p>
+          <div className="flex items-baseline gap-1">
+            <span className="text-2xl font-black text-slate-900">{typeof value === 'number' ? value.toLocaleString() : value}</span>
+            {unit && <span className="text-xs font-bold text-slate-400">{unit}</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
