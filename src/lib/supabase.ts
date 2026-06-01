@@ -11,7 +11,7 @@ type Filter = {
   value: unknown;
 };
 
-const API_BASE = '/api/collections';
+const API_BASE = '/api/collection';
 
 class MongoQueryBuilder {
   private action: 'select' | 'insert' | 'update' | 'delete' = 'select';
@@ -117,8 +117,10 @@ class MongoQueryBuilder {
     if (this.maxRows) params.set('limit', String(this.maxRows));
     if (this.includeRelations) params.set('include', 'relations');
 
+    params.set('collection', this.collection);
+
     const query = params.toString();
-    return `${API_BASE}/${this.collection}${query ? `?${query}` : ''}`;
+    return `${API_BASE}?${query}`;
   }
 
   private async execute(): Promise<QueryResult<any>> {
