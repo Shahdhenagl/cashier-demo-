@@ -61,7 +61,7 @@ export default function PublicInvoice() {
               .lte('created_at', o.created_at);
             
             if (allCustOrders) {
-              debtBefore = allCustOrders.reduce((sum, ord) => {
+              debtBefore = allCustOrders.reduce((sum: number, ord: any) => {
                 if (ord.id === o.id) return sum;
                 if (ord.type === 'payment') return sum - ord.paid_amount;
                 if (ord.type === 'return') return sum;

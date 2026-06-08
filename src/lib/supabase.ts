@@ -3,7 +3,7 @@ type QueryResult<T = any> = {
   error: Error | null;
 };
 
-type FilterOperator = 'eq' | 'gte' | 'lte';
+type FilterOperator = 'eq' | 'neq' | 'gte' | 'lte';
 
 type Filter = {
   field: string;
@@ -56,6 +56,11 @@ class MongoQueryBuilder {
 
   eq(field: string, value: unknown) {
     this.filters.push({ field, operator: 'eq', value });
+    return this;
+  }
+
+  neq(field: string, value: unknown) {
+    this.filters.push({ field, operator: 'neq', value });
     return this;
   }
 

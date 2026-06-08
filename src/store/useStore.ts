@@ -1538,7 +1538,7 @@ setupRealtime: () => {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'orders' },
-        async (payload) => {
+        async (payload: any) => {
           const newOrder = payload.new as any;
           
           // Fetch items for the new order to have a complete order object
@@ -1571,7 +1571,7 @@ setupRealtime: () => {
               card_number: customer.card_number,
               timestamp: customer.created_at
             } : undefined,
-            items: (items || []).map(i => ({
+            items: (items || []).map((i: any) => ({
               id: i.product_id,
               name: i.product_name,
               barcode: i.barcode,
@@ -1594,7 +1594,7 @@ setupRealtime: () => {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'orders' },
-        (payload) => {
+        (payload: any) => {
           const updatedOrder = payload.new as any;
           set((state) => ({
             orders: state.orders.map((order) =>
@@ -1623,7 +1623,7 @@ setupRealtime: () => {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'products' },
-        (payload) => {
+        (payload: any) => {
           const { eventType, new: newRecord, old: oldRecord } = payload;
           set((state) => {
             let updatedProducts = [...state.products];
@@ -1650,7 +1650,7 @@ setupRealtime: () => {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'invoice_counter' },
-        (payload) => {
+        (payload: any) => {
           const nextVal = (payload.new as any).current_value;
           set({ 
             invoiceCounter: nextVal,
