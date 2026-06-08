@@ -7,10 +7,12 @@ import {
   FileText, Table as TableIcon, RefreshCw
 } from 'lucide-react';
 import { useStore } from '../../store/useStore';
+import { calculateInvoiceProfit } from '../../utils/invoiceProfit';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import html2canvas from 'html2canvas';
+import { allocatePayment } from '../../utils/paymentAllocator';
 
 // Fix for jspdf-autotable typing
 declare module 'jspdf' {
@@ -23,7 +25,7 @@ declare module 'jspdf' {
 }
 
 export default function Analytics() {
-  const { storeSettings, loadAnalyticsData, purchaseInvoices, products, expenses } = useStore();
+  const { storeSettings, loadAnalyticsData, purchaseInvoices, products, expenses, orders: globalOrders } = useStore();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState<'7d' | '30d' | 'thisMonth' | 'thisYear' | 'all'>('30d');
@@ -60,15 +62,31 @@ export default function Analytics() {
   const stats = useMemo(() => {
     let revenue = 0;
     let cost = 0;
+    let invoiceProfit = 0;
+    let collectedFromInvoices = 0;
+    let collectedFromOther = 0;
+
     let productsMap: Record<string, { name: string, qty: number, profit: number, revenue: number }> = {};
     let customersMap: Record<string, { name: string, total: number, orders: number }> = {};
 
-    orders.forEach(order => {
-      if (order.type === 'payment') return; // Skip payments for sales analytics
+    const activeOrders = orders.filter((order: any) => !order.is_deleted);
+
+    activeOrders.forEach(order => {
+      if (order.type === 'payment') {
+        const { toSales, toOldDebt } = allocatePayment(order, globalOrders);
+        collectedFromInvoices += toSales;
+        collectedFromOther += toOldDebt;
+        revenue += order.paid_amount;
+        return; // Skip items calculation for payment orders
+      }
+
+      invoiceProfit += calculateInvoiceProfit(order);
+      collectedFromInvoices += order.paid_amount;
+      revenue += order.paid_amount;
 
       let netOrderTotal = 0;
       
-      order.items.forEach((item: any) => {
+      order.items?.forEach((item: any) => {
         const qty = item.quantity - item.returned_quantity;
         const itemRevenue = item.sale_price * qty;
         const itemCost = item.average_purchase_price * qty; // Note: using average_purchase_price here for Branch 1
@@ -83,8 +101,6 @@ export default function Analytics() {
         productsMap[item.id].profit += (itemRevenue - itemCost);
       });
 
-      revenue += netOrderTotal;
-
       if (order.customer) {
         if (!customersMap[order.customer.id]) {
           customersMap[order.customer.id] = { name: order.customer.name, total: 0, orders: 0 };
@@ -93,6 +109,10 @@ export default function Analytics() {
         customersMap[order.customer.id].orders += 1;
       }
     });
+
+    // Global Debts
+    const totalCustomerDebt = Math.max(0, globalOrders.filter(o => !o.is_deleted).reduce((sum, o) => sum + (o.total - o.paid_amount), 0));
+    const totalSupplierDebt = Math.max(0, purchaseInvoices.reduce((sum, inv) => sum + (inv.total - inv.paid_amount), 0));
 
     const profit = revenue - cost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
@@ -133,21 +153,29 @@ export default function Analytics() {
       return expDate >= startLimit;
     });
 
-    const totalExpenses = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
-    const finalNetProfit = profit - totalExpenses;
+    const extraIncomes = filteredExpenses.filter(e => e.amount < 0).reduce((sum, e) => sum + Math.abs(e.amount), 0);
+    const totalExpenses = filteredExpenses.filter(e => e.amount > 0).reduce((sum, exp) => sum + exp.amount, 0);
+    
+    collectedFromOther += extraIncomes;
+    revenue += extraIncomes;
+    const finalNetProfit = profit + extraIncomes - totalExpenses;
 
     return { 
-      revenue, cost, profit, margin, 
-      orderCount: orders.filter(o => o.type === 'sale').length,
+      revenue, cost, profit, invoiceProfit, margin, 
+      orderCount: activeOrders.filter(o => o.type === 'sale').length,
       topProductsByQty, 
       topProductsByProfit, 
       topCustomers,
       procurementCost,
       totalInventoryValue,
       totalExpenses,
-      finalNetProfit
+      finalNetProfit,
+      collectedFromInvoices,
+      collectedFromOther,
+      totalCustomerDebt,
+      totalSupplierDebt
     };
-  }, [orders, expenses, purchaseInvoices, products, timeRange]);
+  }, [orders, expenses, purchaseInvoices, products, timeRange, globalOrders]);
 
   // ── Export Logic ─────────────────────────────────────────────
   const exportExcel = () => {
@@ -156,9 +184,9 @@ export default function Analytics() {
       ['الفترة', timeRange, '', ''],
       [''],
       ['ملخص عام', '', '', ''],
-      ['إجمالي المبيعات', stats.revenue, storeSettings.currency, ''],
+      ['إجمالي المبيعات والإيرادات', stats.revenue, storeSettings.currency, ''],
       ['إجمالي التكلفة', stats.cost, storeSettings.currency, ''],
-      ['إجمالي الربح (مجمل)', stats.profit, storeSettings.currency, ''],
+      ['إجمالي الربح من الفواتير', stats.invoiceProfit, storeSettings.currency, ''],
       ['إجمالي المصاريف والتكاليف', stats.totalExpenses, storeSettings.currency, ''],
       ['صافي الربح النهائي', stats.finalNetProfit, storeSettings.currency, ''],
       ['هامش الربح', stats.margin.toFixed(2) + '%', '', ''],
@@ -267,10 +295,42 @@ export default function Analytics() {
         </div>
       </div>
 
+      {/* Cards: New Financial Indicators */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <StatCard 
+          title="المحصل من الفواتير" 
+          value={stats.collectedFromInvoices} 
+          unit={storeSettings.currency}
+          icon={DollarSign} 
+          color="emerald" 
+        />
+        <StatCard 
+          title="إيرادات أخرى ومسدد آجل" 
+          value={stats.collectedFromOther} 
+          unit={storeSettings.currency}
+          icon={TrendingUp} 
+          color="indigo" 
+        />
+        <StatCard 
+          title="إجمالي الآجل على العملاء" 
+          value={stats.totalCustomerDebt} 
+          unit={storeSettings.currency}
+          icon={Users} 
+          color="amber" 
+        />
+        <StatCard 
+          title="إجمالي المديونية للموردين" 
+          value={stats.totalSupplierDebt} 
+          unit={storeSettings.currency}
+          icon={FileText} 
+          color="red" 
+        />
+      </div>
+
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard 
-          title="إجمالي المبيعات" 
+          title="إجمالي المبيعات والإيرادات" 
           value={stats.revenue} 
           unit={storeSettings.currency}
           icon={TrendingUp} 
@@ -278,12 +338,12 @@ export default function Analytics() {
           increase={true} 
         />
         <StatCard 
-          title="صافي الربح" 
-          value={stats.profit} 
+          title="إجمالي الربح من الفواتير" 
+          value={stats.invoiceProfit} 
           unit={storeSettings.currency}
-          icon={DollarSign} 
+          icon={FileText} 
           color="emerald" 
-          increase={stats.profit > 0} 
+          increase={stats.invoiceProfit > 0} 
         />
         <StatCard 
           title="المصاريف والتكاليف" 
@@ -459,7 +519,8 @@ function StatCard({ title, value, unit, icon: Icon, color, increase }: any) {
     indigo: 'bg-indigo-600',
     emerald: 'bg-emerald-600',
     amber: 'bg-amber-500',
-    slate: 'bg-slate-800'
+    slate: 'bg-slate-800',
+    red: 'bg-red-600'
   };
 
   return (

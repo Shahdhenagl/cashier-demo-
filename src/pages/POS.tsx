@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store/useStore';
-import { ShoppingCart, Search, Plus, Minus, Trash2, Banknote, RefreshCcw, Moon, Sun, ArrowRightLeft, X, Printer, CreditCard, Smartphone, Zap } from 'lucide-react';
+import { ShoppingCart, Search, Plus, Minus, Trash2, Banknote, RefreshCcw, Moon, Sun, ArrowRightLeft, X, Printer, CreditCard, Smartphone, Zap, ScanLine, Camera, Box, Check, ChevronRight, ChevronLeft } from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
 import { normalizeArabic } from '../utils/textUtils';
 
 
@@ -10,7 +11,89 @@ export default function POS() {
   const navigate = useNavigate();
 
   const [activeCategory, setActiveCategory] = useState<string>('all');
+  const categoriesRef = useRef<HTMLDivElement>(null);
+
+  const scrollCategories = (direction: 'left' | 'right') => {
+    if (categoriesRef.current) {
+      const scrollAmount = 200;
+      categoriesRef.current.scrollBy({
+        left: direction === 'left' ? -scrollAmount : scrollAmount,
+        behavior: 'smooth'
+      });
+    }
+  };
+
   const [searchQuery, setSearchQuery] = useState('');
+  const [barcodeInput, setBarcodeInput] = useState('');
+  const [scanStatus, setScanStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+  // Mobile Responsiveness & Camera Scanner States
+  const [mobileView, setMobileView] = useState<'catalog' | 'cart'>('catalog');
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
+  const [scannedProduct, setScannedProduct] = useState<any>(null);
+  const [scanQty, setScanQty] = useState(1);
+  const [html5QrCode, setHtml5QrCode] = useState<Html5Qrcode | null>(null);
+
+  const playSuccessSound = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(800, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch (e) {
+      console.log('Audio not supported', e);
+    }
+  };
+
+  const playErrorSound = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(300, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(200, ctx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {
+      console.log('Audio not supported', e);
+    }
+  };
+
+  const handleBarcodeScan = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const code = barcodeInput.trim();
+      if (!code) return;
+
+      const product = products.find(p => p.barcode === code);
+      if (product) {
+        playSuccessSound();
+        addToCart(product);
+        setBarcodeInput('');
+        setScanStatus('success');
+        setTimeout(() => setScanStatus('idle'), 1000);
+      } else {
+        playErrorSound();
+        setScanStatus('error');
+        setTimeout(() => setScanStatus('idle'), 1000);
+      }
+    }
+  };
 
   // Customer details for checkout
   const [customerId, setCustomerId] = useState('');
@@ -27,6 +110,7 @@ export default function POS() {
   const [showReturnsModal, setShowReturnsModal] = useState(false);
   const [returnSearchQuery, setReturnSearchQuery] = useState('');
   const [activeReturnOrder, setActiveReturnOrder] = useState<any>(null);
+  const [pendingReturns, setPendingReturns] = useState<Record<string, { returnQty: number, refundAmount: number }>>({});
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastInvoiceId, setLastInvoiceId] = useState('');
   const [lastCustomerInfo, setLastCustomerInfo] = useState<any>(null);
@@ -34,6 +118,82 @@ export default function POS() {
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const [shouldPrint, setShouldPrint] = useState(false);
+
+  // Camera Scanner Logic
+  useEffect(() => {
+    let scanner: Html5Qrcode | null = null;
+    
+    if (showCameraScanner && !html5QrCode) {
+      scanner = new Html5Qrcode("reader");
+      setHtml5QrCode(scanner);
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText) => {
+          if (scanner && scanner.getState() === 2) { // 2 = SCANNING
+            scanner.pause();
+          }
+          const product = useStore.getState().products.find(p => p.barcode === decodedText);
+          if (product) {
+            playSuccessSound();
+            setScannedProduct(product);
+            setScanQty(1);
+          } else {
+            playErrorSound();
+            alert('لم يتم العثور على المنتج');
+            if (scanner && scanner.getState() === 3) { // 3 = PAUSED
+              scanner.resume();
+            }
+          }
+        },
+        (_error) => {
+          // ignore continuous scan errors
+        }
+      ).catch((err) => {
+        console.error(err);
+        alert('حدث خطأ في تشغيل الكاميرا، تأكد من إعطاء الصلاحيات.');
+        setShowCameraScanner(false);
+      });
+    }
+
+    return () => {
+      // Cleanup is handled manually in handleCloseCamera to avoid unmount race conditions
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCameraScanner]);
+
+  const handleConfirmScanAdd = () => {
+    if (scannedProduct) {
+      for (let i = 0; i < scanQty; i++) {
+        addToCart(scannedProduct);
+      }
+      setScannedProduct(null);
+      if (html5QrCode && html5QrCode.getState() === 3) {
+        html5QrCode.resume();
+      }
+    }
+  };
+
+  const handleCloseCamera = () => {
+    if (html5QrCode) {
+      if (html5QrCode.getState() === 2 || html5QrCode.getState() === 3) {
+        html5QrCode.stop().then(() => {
+          html5QrCode.clear();
+          setHtml5QrCode(null);
+          setShowCameraScanner(false);
+          setScannedProduct(null);
+        }).catch(console.error);
+      } else {
+        html5QrCode.clear();
+        setHtml5QrCode(null);
+        setShowCameraScanner(false);
+        setScannedProduct(null);
+      }
+    } else {
+      setShowCameraScanner(false);
+      setScannedProduct(null);
+    }
+  };
 
   useEffect(() => {
     if (isDarkMode) {
@@ -77,26 +237,38 @@ export default function POS() {
     const order = orders.find(o => o.id.toLowerCase() === returnSearchQuery.toLowerCase());
     if (order) {
       setActiveReturnOrder(order);
+      setPendingReturns({});
     } else {
       alert("لم يتم العثور على فاتورة بهذا الرقم");
       setActiveReturnOrder(null);
+      setPendingReturns({});
     }
   };
 
-  const handleReturnItem = async (productId: string) => {
-    if (activeReturnOrder) {
-      const qs = prompt("أدخل الكمية المراد استرجاعها:");
-      const qty = parseInt(qs || '0', 10);
-      if (!isNaN(qty) && qty > 0) {
-        const success = await processReturn(activeReturnOrder.id, productId, qty);
-        if (success) {
-          alert('تم استرجاع المنتجات بنجاح وإعادتها للمخزون');
-          const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
-          setActiveReturnOrder(updatedOrder);
-        } else {
-          alert("الكمية غير صحيحة أو تم استرجاعها مسبقاً بالكامل");
-        }
-      }
+  const handleConfirmReturns = async () => {
+    if (!activeReturnOrder) return;
+    
+    const returnsArray = Object.keys(pendingReturns).map(productId => ({
+       productId,
+       returnQty: pendingReturns[productId].returnQty,
+       refundAmount: pendingReturns[productId].refundAmount
+    })).filter(r => r.returnQty > 0);
+
+    if (returnsArray.length === 0) {
+       alert("الرجاء تحديد كميات للإرجاع");
+       return;
+    }
+
+    if (!confirm("هل أنت متأكد من تأكيد هذه المرتجعات؟")) return;
+
+    const success = await processReturn(activeReturnOrder.id, returnsArray);
+    if (success) {
+      alert('تم إرجاع المنتجات المحددة بنجاح!');
+      const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
+      setActiveReturnOrder(updatedOrder);
+      setPendingReturns({});
+    } else {
+      alert("حدث خطأ أثناء الإرجاع. قد تكون الكمية غير متاحة.");
     }
   };
 
@@ -268,7 +440,12 @@ export default function POS() {
     const currentTotal = total;
     const currentCustomerName = customerName;
     const currentCustomerPhone = customerPhone;
-    const currentCustomId = customerId;
+    const currentCustomerCard = customerId;
+    const matchedCustomer = customers.find(c =>
+      (currentCustomerPhone && c.phone === currentCustomerPhone) ||
+      (currentCustomerCard && (c.card_number === currentCustomerCard || c.custom_id === currentCustomerCard))
+    );
+    const currentCustomId = matchedCustomer?.custom_id || currentCustomerCard;
 
     const splitPayments = {
       cash: parseFloat(paidCash) || 0,
@@ -322,9 +499,13 @@ export default function POS() {
       totalDebt: (customerDebt || 0) + (currentTotal - effectivePaidAmount)
     };
 
-    const actualCustomer = useStore.getState().customers.find(c => (currentCustomerPhone && c.phone === currentCustomerPhone) || (currentCustomId && c.custom_id === currentCustomId));
+    const actualCustomer = useStore.getState().customers.find(c =>
+      (currentCustomerPhone && c.phone === currentCustomerPhone) ||
+      (currentCustomerCard && (c.card_number === currentCustomerCard || c.custom_id === currentCustomerCard)) ||
+      (currentCustomId && c.custom_id === currentCustomId)
+    );
     details.customerId = actualCustomer?.id || '';
-    details.customId = actualCustomer?.custom_id || currentCustomId;
+    details.customId = actualCustomer?.card_number || actualCustomer?.custom_id || currentCustomerCard;
 
     setLastInvoiceId(invoiceId);
     setLastCustomerInfo({ name: currentCustomerName, phone: currentCustomerPhone });
@@ -352,10 +533,12 @@ export default function POS() {
       const normalizedName = normalizeArabic(c.name);
       const normalizedQuery = normalizeArabic(customerName);
       const customerIdShort = (c.custom_id || c.id.substring(0, 8)).toLowerCase();
+      const cardNumber = (c.card_number || '').toLowerCase();
       return (
         normalizedName.includes(normalizedQuery) ||
         c.phone.includes(customerName) ||
-        customerIdShort.includes(customerName.toLowerCase())
+        customerIdShort.includes(customerName.toLowerCase()) ||
+        cardNumber.includes(customerName.toLowerCase())
       );
     })
     : [];
@@ -365,22 +548,28 @@ export default function POS() {
   const handleSelectCustomer = (customer: any) => {
     setCustomerName(customer.name);
     setCustomerPhone(customer.phone);
-    setCustomerId(customer.custom_id || '');
+    setCustomerId(customer.card_number || customer.custom_id || '');
     setShowCustomerSuggestions(false);
   };
 
+  const normalizedSearch = normalizeArabic(searchQuery);
+  const searchTerms = normalizedSearch.split(' ').filter(t => t.trim() !== '');
+
   const filteredProducts = products.filter(
-    (p) =>
-      !p.is_hidden &&                                           // لا يظهر المنتج المخفي في الكاشير
-      (activeCategory === 'all' || p.category_id === activeCategory) &&
-      p.name.includes(searchQuery)
+    (p) => {
+      const normalizedName = normalizeArabic(p.name);
+      const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => normalizedName.includes(term)) || (p.barcode && p.barcode.includes(searchQuery));
+      return !p.is_hidden && (activeCategory === 'all' || p.category_id === activeCategory) && matchesSearch;
+    }
   );
 
   const subtotal = cart.reduce((sum, item) => sum + item.sale_price * item.quantity, 0);
+  const totalCost = cart.reduce((sum, item) => sum + (item.average_purchase_price || item.purchase_price || 0) * item.quantity, 0);
   const discount = Math.min(parseFloat(discountStr) || 0, subtotal);
   const discountedSubtotal = subtotal - discount;
   const tax = discountedSubtotal * (storeSettings.taxRate / 100);
   const total = discountedSubtotal + tax;
+  const profit = discountedSubtotal - totalCost;
 
 
   // Sync customer debt calculation only
@@ -391,7 +580,7 @@ export default function POS() {
     }
     const existingCust = customers.find(c =>
       (customerPhone && c.phone === customerPhone) ||
-      (customerId && c.custom_id === customerId)
+      (customerId && (c.card_number === customerId || c.custom_id === customerId))
     );
 
     if (existingCust) {
@@ -412,16 +601,25 @@ export default function POS() {
     if (!activeReturnOrder) return;
     if (!confirm("هل أنت متأكد من رغبتك في استرجاع الفاتورة بالكامل؟")) return;
 
-    for (const item of activeReturnOrder.items) {
-      const available = item.quantity - item.returned_quantity;
-      if (available > 0) {
-        await processReturn(activeReturnOrder.id, item.id, available);
-      }
-    }
+    const itemsSum = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.quantity * item.sale_price), 0);
+    const discountRatio = itemsSum > 0 ? activeReturnOrder.total / itemsSum : 1;
 
-    alert('تم استرجاع الفاتورة بالكامل بنجاح');
-    const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
-    setActiveReturnOrder(updatedOrder);
+    const returnsArray = activeReturnOrder.items.map((item: any) => {
+      const available = item.quantity - item.returned_quantity;
+      return {
+        productId: item.id,
+        returnQty: available,
+        refundAmount: available * item.sale_price * discountRatio
+      };
+    }).filter((r: any) => r.returnQty > 0);
+
+    if (returnsArray.length > 0) {
+      await processReturn(activeReturnOrder.id, returnsArray);
+      alert('تم استرجاع الفاتورة بالكامل بنجاح');
+      const updatedOrder = useStore.getState().orders.find(o => o.id === activeReturnOrder.id);
+      setActiveReturnOrder(updatedOrder);
+      setPendingReturns({});
+    }
   };
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -431,7 +629,7 @@ export default function POS() {
       const match = customers.find(c => c.phone === val);
       if (match) {
         setCustomerName(match.name);
-        setCustomerId(match.custom_id || '');
+        setCustomerId(match.card_number || match.custom_id || '');
       }
     }
   };
@@ -440,7 +638,7 @@ export default function POS() {
     const val = e.target.value;
     setCustomerId(val);
     if (val) {
-      const match = customers.find(c => c.custom_id === val);
+      const match = customers.find(c => c.card_number === val || c.custom_id === val);
       if (match) {
         setCustomerName(match.name);
         setCustomerPhone(match.phone);
@@ -470,16 +668,22 @@ export default function POS() {
                       const sendWhatsApp = (invId: string, customerPhone: string, orderDetails: any) => {
                         if (!customerPhone.trim()) return;
                         let itemsText = orderDetails.cart.map((item: any) => `• ${item.name} (عدد: ${item.quantity}) - ${(item.sale_price * item.quantity).toFixed(2)} ${storeSettings.currency}`).join('\n');
-                        const invoiceLink = `${window.location.origin}/view-invoice/${invId}`;
-                        const message = `*فاتورة جديدة من ${storeSettings.name}* 🧾\n\n` +
+                        const publicBaseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+                          ? 'https://cashier-branch3.vercel.app'
+                          : window.location.origin;
+                        const invoiceLink = `${publicBaseUrl}/view-invoice/${invId}`;
+                        const branchAddress = storeSettings.address || '';
+                        const branchLocationLink = storeSettings.locationUrl || '';
+                        const message = `*فاتورة جديدة من ${storeSettings.name}*\n\n` +
                           `*رقم الفاتورة:* #${invId}\n` +
                           `*التاريخ:* ${new Date().toLocaleString('ar-SA')}\n` +
                           `*الإجمالي:* ${orderDetails.total.toFixed(2)} ${storeSettings.currency}\n\n` +
-                          `*عرض الفاتورة بالتفاصيل:* 👇\n${invoiceLink}\n\n` +
+                          `*عرض الفاتورة بالتفاصيل:*\n${invoiceLink}\n\n` +
                           `*تفاصيل الطلب:*\n${itemsText}\n\n` +
-                          `${storeSettings.address ? `📍 *العنوان:* ${storeSettings.address}\n` : ''}` +
-                          `${storeSettings.phone ? `📞 *للتواصل:* ${storeSettings.phone}\n` : ''}` +
-                          `\n*شكراً لتعاملكم معنا، في انتظاركم مرة أخرى!* ❤️\n` +
+                          (branchAddress ? `*عنوان الفرع:* ${branchAddress}\n` : '') +
+                          (branchLocationLink ? `*لوكيشن الفرع على Google Maps:*\n${branchLocationLink}\n` : '') +
+                          `${(storeSettings.phone || storeSettings.phone2) ? `*للتواصل أو الشحن:* ${[storeSettings.phone, storeSettings.phone2].filter(Boolean).join(' - ')}\nيمكنكم التواصل هاتفيا أو واتساب، أو زيارة الفرع على العنوان الموضح.\n` : ''}` +
+                          `\n*شكراً لتعاملكم معنا، في انتظاركم مرة أخرى!*\n` +
                           `*ما رأيك في خدمتنا؟ نسعد بتلقي ملاحظاتك.*`;
                         let cleanPhone = customerPhone.replace(/\D/g, '');
                         const code = storeSettings.whatsappCountryCode || '2';
@@ -527,8 +731,8 @@ export default function POS() {
       )}
 
       {showReturnsModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700">
+        <div className="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm flex items-start md:items-center justify-center p-4 pt-8 md:pt-4 pb-20 md:pb-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700">
             <div className="p-6 bg-gradient-to-r from-red-500 to-orange-500 text-white flex justify-between items-center">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <ArrowRightLeft size={24} /> نظام المرتجعات
@@ -553,18 +757,26 @@ export default function POS() {
               {activeReturnOrder && (() => {
                 const itemsSum = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.quantity * item.sale_price), 0);
                 const discountRatio = itemsSum > 0 ? activeReturnOrder.total / itemsSum : 1;
-
-                const initialDebt = Math.max(0, activeReturnOrder.total - activeReturnOrder.paid_amount);
-                const totalReturnedValue = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.returned_quantity * item.sale_price), 0) * discountRatio;
-                const cashRefund = totalReturnedValue;
-                const debtReduction = 0;
+                
+                // Calculate total proposed return value based on pendingReturns state, or fall back to old calculation for summary
+                let totalPendingRefund = 0;
+                Object.values(pendingReturns).forEach(pr => {
+                  totalPendingRefund += pr.refundAmount;
+                });
+                
+                // calculate past refunds
+                const pastRefunds = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.refunded_amount || 0), 0);
 
                 return (
                   <>
                     {/* Financial Summary Card */}
                     <div className="bg-slate-50 dark:bg-slate-900/50 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                       <div className="flex flex-col">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">إجمالي الفاتورة</span>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">العميل</span>
+                        <span className="text-sm font-black text-slate-800 dark:text-slate-200">{activeReturnOrder.customer?.name || 'عميل نقدي'}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">إجمالي الفاتورة (بعد الخصم)</span>
                         <span className="text-sm font-black text-slate-800 dark:text-slate-200">{activeReturnOrder.total.toFixed(2)} {storeSettings.currency}</span>
                       </div>
                       <div className="flex flex-col">
@@ -572,66 +784,115 @@ export default function POS() {
                         <span className="text-sm font-black text-green-600 dark:text-green-400">{activeReturnOrder.paid_amount.toFixed(2)} {storeSettings.currency}</span>
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">مديونية الفاتورة</span>
-                        <span className="text-sm font-black text-red-600 dark:text-red-400">{initialDebt.toFixed(2)} {storeSettings.currency}</span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">إجمالي المرتجع</span>
-                        <span className="text-sm font-black text-orange-600 dark:text-orange-400">{totalReturnedValue.toFixed(2)} {storeSettings.currency}</span>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">نسبة خصم الفاتورة</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{((1 - discountRatio) * 100).toFixed(1)}%</span>
                       </div>
                     </div>
 
                     {/* Action/Result Status */}
-                    <div className="flex flex-col gap-2 mb-4">
-                      {debtReduction > 0 && (
-                        <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 p-3 rounded-xl border border-blue-100 dark:border-blue-800/50 flex justify-between items-center text-sm">
-                          <span className="font-bold flex items-center gap-2 italic">✓ خصم من مديونية الفاتورة:</span>
-                          <span className="font-black text-base">{debtReduction.toFixed(2)} {storeSettings.currency}</span>
-                        </div>
-                      )}
-                      {cashRefund > 0 ? (
+                    {totalPendingRefund > 0 && (
+                      <div className="flex flex-col gap-2 mb-4">
                         <div className="bg-emerald-500 text-white p-4 rounded-xl shadow-lg shadow-emerald-200 dark:shadow-none flex justify-between items-center animate-pulse">
                           <div className="flex items-center gap-3">
                             <div className="bg-white/20 p-2 rounded-lg"><Banknote size={24} /></div>
-                            <span className="font-black text-lg">المبلغ المستحق رده (كاش):</span>
+                            <span className="font-black text-lg">إجمالي المبلغ الذي سيتم رده للعميل (كاش):</span>
                           </div>
-                          <span className="text-2xl font-black">{cashRefund.toFixed(2)} {storeSettings.currency}</span>
+                          <span className="text-2xl font-black">{totalPendingRefund.toFixed(2)} {storeSettings.currency}</span>
                         </div>
-                      ) : initialDebt > 0 && (
-                        <div className="bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-300 p-3 rounded-xl border border-orange-100 dark:border-orange-800/50 flex justify-between items-center text-sm italic">
-                          <span>المتبقي من مديونية الفاتورة:</span>
-                          <span className="font-black">{(initialDebt - totalReturnedValue).toFixed(2)} {storeSettings.currency}</span>
-                        </div>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
                     <div className="flex-1 border border-gray-200 dark:border-slate-700 flex flex-col rounded-xl overflow-hidden">
                       <div className="bg-gray-100 dark:bg-slate-700 p-4 flex justify-between items-center border-b border-gray-200 dark:border-slate-600">
                         <div className="flex flex-col">
                           <span className="font-bold text-gray-700 dark:text-gray-200 font-mono tracking-wider">الأصناف المتاحة للإرجاع</span>
-                          <span className="text-[10px] text-slate-500 font-bold">رقم الفاتورة: #{activeReturnOrder.id}</span>
+                          <span className="text-[10px] text-slate-500 font-bold">رقم الفاتورة: #{activeReturnOrder.id} | المرتجع مسبقاً: {pastRefunds.toFixed(2)} {storeSettings.currency}</span>
                         </div>
-                        <button
-                          onClick={handleReturnAll}
-                          className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg transition-all"
-                        >
-                          إرجاع الفاتورة بالكامل
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={handleReturnAll}
+                            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg transition-all"
+                          >
+                            إرجاع الفاتورة بالكامل
+                          </button>
+                          <button
+                            onClick={handleConfirmReturns}
+                            disabled={Object.values(pendingReturns).filter(pr => pr.returnQty > 0).length === 0}
+                            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2 rounded-xl text-xs font-black shadow-lg transition-all"
+                          >
+                            تأكيد المرتجعات المحددة
+                          </button>
+                        </div>
                       </div>
                       <div className="p-4 space-y-3 max-h-72 overflow-y-auto hide-scrollbar">
-                        {activeReturnOrder.items.map((item: any) => (
-                          <div key={item.id} className="flex justify-between items-center p-4 bg-white dark:bg-slate-800 border border-gray-100 dark:border-slate-600 rounded-xl shadow-sm hover:shadow-md transition-shadow">
-                            <div className="flex flex-col">
-                              <span className="font-bold text-md text-gray-800 dark:text-gray-100">{item.name}</span>
-                              <span className="text-sm text-gray-500 dark:text-gray-400 mt-1">الكمية المسجلة: {item.quantity} | المسترجع: <span className="text-red-500 font-bold">{item.returned_quantity}</span></span>
+                        {activeReturnOrder.items.map((item: any) => {
+                          const available = item.quantity - item.returned_quantity;
+                          const effectivePrice = item.sale_price * discountRatio;
+                          const pr = pendingReturns[item.id] || { returnQty: 0, refundAmount: 0 };
+                          
+                          return (
+                            <div key={item.id} className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-white dark:bg-slate-800 border border-gray-100 dark:border-slate-600 rounded-xl shadow-sm hover:shadow-md transition-shadow gap-4">
+                              <div className="flex flex-col flex-1">
+                                <span className="font-bold text-md text-gray-800 dark:text-gray-100">{item.name}</span>
+                                <div className="text-sm text-gray-500 dark:text-gray-400 mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                                  <span>مباع: {item.quantity}</span>
+                                  <span>مسترجع مسبقاً: <span className="text-red-500 font-bold">{item.returned_quantity}</span></span>
+                                  <span>سعر الوحدة الأصلي: {item.sale_price.toFixed(2)}</span>
+                                  <span className="text-indigo-500 font-bold">سعر الوحدة بعد الخصم: {effectivePrice.toFixed(2)}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 w-full md:w-auto">
+                                <div className="flex flex-col gap-1 w-24">
+                                  <label className="text-[10px] font-bold text-slate-500">كمية الإرجاع</label>
+                                  <input 
+                                    type="number" 
+                                    min="0" 
+                                    max={available}
+                                    value={pr.returnQty || ''}
+                                    onChange={(e) => {
+                                      let qty = parseInt(e.target.value) || 0;
+                                      if (qty > available) qty = available;
+                                      if (qty < 0) qty = 0;
+                                      setPendingReturns(prev => ({
+                                        ...prev,
+                                        [item.id]: {
+                                          returnQty: qty,
+                                          refundAmount: qty * effectivePrice
+                                        }
+                                      }));
+                                    }}
+                                    className="w-full bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 text-center font-bold focus:ring-2 focus:ring-red-500 outline-none"
+                                    placeholder="0"
+                                    disabled={available === 0}
+                                  />
+                                </div>
+                                <div className="flex flex-col gap-1 w-32">
+                                  <label className="text-[10px] font-bold text-slate-500">المبلغ المردود ({storeSettings.currency})</label>
+                                  <input 
+                                    type="number" 
+                                    min="0" 
+                                    step="0.01"
+                                    value={pr.returnQty > 0 ? (pr.refundAmount !== undefined ? pr.refundAmount : '') : ''}
+                                    onChange={(e) => {
+                                      const amt = parseFloat(e.target.value) || 0;
+                                      setPendingReturns(prev => ({
+                                        ...prev,
+                                        [item.id]: {
+                                          ...prev[item.id],
+                                          returnQty: prev[item.id]?.returnQty || 0,
+                                          refundAmount: amt
+                                        }
+                                      }));
+                                    }}
+                                    className="w-full bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 text-center font-bold text-red-600 focus:ring-2 focus:ring-red-500 outline-none"
+                                    placeholder="0.00"
+                                    disabled={pr.returnQty === 0}
+                                  />
+                                </div>
+                              </div>
                             </div>
-                            <button
-                              disabled={item.quantity === item.returned_quantity}
-                              onClick={() => handleReturnItem(item.id)}
-                              className="bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 hover:bg-red-100 px-5 py-2.5 rounded-xl text-sm font-bold disabled:opacity-50 transition border border-red-100 dark:border-red-900/50"
-                            >إرجاع</button>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   </>
@@ -643,16 +904,20 @@ export default function POS() {
       )}
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 shadow-2xl z-10 w-2/3">
-        <header className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
-          <div className="flex items-center gap-4">
-            <div className="relative group cursor-pointer" onClick={() => { if (confirm('هل تريد تسجيل الخروج؟')) { logoutPOS(); navigate('/pos-login'); } }}>
+      <div className={`flex-1 flex flex-col h-full pb-16 lg:pb-0 bg-white dark:bg-slate-900 shadow-2xl z-10 w-full lg:w-2/3 ${mobileView === 'cart' ? 'hidden lg:flex' : 'flex'}`}>
+        <header className="flex flex-col p-3 md:p-5 gap-4 border-b border-gray-100 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
+          {/* Top Row: Avatar (Right), Text (Center), Dark Mode (Left) */}
+          <div className="flex justify-between items-start w-full">
+            {/* Right: Avatar */}
+            <div className="relative group cursor-pointer shrink-0" onClick={() => { if (confirm('هل تريد تسجيل الخروج؟')) { logoutPOS(); navigate('/pos-login'); } }}>
               <img src={activeCashier?.photo_url || storeSettings.logo} alt="Logo" className="w-12 h-12 object-cover rounded-xl shadow-md border border-gray-100 dark:border-slate-700 bg-white p-0.5 group-hover:scale-110 transition-transform" />
               <div className="absolute -bottom-1 -right-1 bg-green-500 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900"></div>
             </div>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-l from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400">
+
+            {/* Center: Text & Badges */}
+            <div className="flex flex-col items-center flex-1 px-2 text-center">
+              <div className="flex flex-col md:flex-row items-center gap-2 mb-1">
+                <h1 className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-l from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 leading-tight">
                   أهلاً، {activeCashier?.name?.split(' ')[0] || 'المحاسب'}
                 </h1>
                 
@@ -678,55 +943,106 @@ export default function POS() {
                   </span>
                 )}
               </div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{storeSettings.name}</span>
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest leading-tight">{storeSettings.name}</span>
             </div>
-          </div>
-          <div className="flex items-center gap-4 flex-1 max-w-lg ml-6">
-            <div className="relative w-full">
-              <Search className="absolute right-4 top-3.5 text-gray-400" size={20} />
-              <input
-                type="text"
-                placeholder="ابحث باسم المنتج..."
-                style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
-                className="w-full bg-slate-100 dark:bg-slate-800 dark:text-white border-none rounded-2xl py-3.5 pr-12 pl-4 text-sm focus:outline-none focus:ring-2 shadow-inner transition"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-            <button onClick={() => setShowReturnsModal(true)} className="flex items-center gap-2 px-5 py-3.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 rounded-2xl font-bold transition border border-red-100 dark:border-red-900/30 whitespace-nowrap shadow-sm">
-              <RefreshCcw size={18} /> مرتجع
-            </button>
-            <button onClick={toggleTheme} className="p-3.5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 transition shadow-sm">
+
+            {/* Left: Dark Mode Toggle */}
+            <button onClick={toggleTheme} className="p-3 lg:p-3.5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 transition shadow-sm shrink-0">
               {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+          </div>
+
+          {/* Bottom Row: Camera (Right), Scanner/Search (Center), Returns (Left) */}
+          <div className="flex items-center justify-between gap-2 lg:gap-4 w-full">
+            {/* Right: Camera Button */}
+            <button 
+              onClick={() => setShowCameraScanner(true)}
+              className="p-3 lg:p-3.5 rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-100 transition shadow-sm flex items-center justify-center shrink-0 w-[44px] h-[44px] lg:w-[52px] lg:h-[52px]"
+              title="مسح بالكاميرا"
+            >
+              <Camera size={20} />
+            </button>
+
+            {/* Center: Barcode Scanner & Search */}
+            <div className="flex-1 flex gap-2 lg:gap-4 justify-center max-w-2xl">
+              <div className="relative w-full group flex-1">
+                 <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full z-10 shadow-sm opacity-0 group-focus-within:opacity-100 transition-opacity whitespace-nowrap">SCAN (Enter)</span>
+                 <div className={`relative flex items-center border-2 rounded-2xl transition-colors bg-white dark:bg-slate-800 h-[44px] lg:h-[52px] w-full ${scanStatus === 'success' ? 'border-emerald-500 ring-2 ring-emerald-200' : scanStatus === 'error' ? 'border-red-500 ring-2 ring-red-200' : 'border-indigo-200 dark:border-slate-700 focus-within:border-indigo-500 shadow-inner'}`}>
+                   <ScanLine className={`absolute right-2 lg:right-3 ${scanStatus === 'success' ? 'text-emerald-500' : scanStatus === 'error' ? 'text-red-500' : 'text-indigo-500'}`} size={18} />
+                   <input
+                     type="text"
+                     dir="ltr"
+                     placeholder="قارئ الباركود"
+                     className="w-full bg-transparent border-none h-full pr-8 lg:pr-10 pl-2 lg:pl-3 text-xs lg:text-sm focus:outline-none focus:ring-0 font-mono font-bold placeholder-indigo-300 dark:placeholder-slate-500 text-indigo-700 dark:text-indigo-400 text-center"
+                     value={barcodeInput}
+                     onChange={e => setBarcodeInput(e.target.value)}
+                     onKeyDown={handleBarcodeScan}
+                   />
+                 </div>
+              </div>
+
+              {/* Desktop Only Search */}
+              <div className="relative flex-1 hidden lg:block">
+                <Search className="absolute right-4 top-3.5 text-gray-400" size={20} />
+                <input
+                  type="text"
+                  placeholder="ابحث باسم المنتج..."
+                  style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                  className="w-full h-[52px] bg-slate-100 dark:bg-slate-800 dark:text-white border-none rounded-2xl py-3.5 pr-12 pl-4 text-sm focus:outline-none focus:ring-2 shadow-inner transition"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Left: Returns Button */}
+            <button onClick={() => setShowReturnsModal(true)} className="flex items-center justify-center gap-1.5 lg:gap-2 px-3 lg:px-5 h-[44px] lg:h-[52px] bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 rounded-2xl font-bold transition border border-red-100 dark:border-red-900/30 whitespace-nowrap shadow-sm shrink-0">
+              <RefreshCcw size={18} /> <span className="text-sm">مرتجع</span>
             </button>
           </div>
         </header>
 
         {/* Categories Tabs */}
-        <div className="flex gap-3 p-5 overflow-x-auto border-b border-gray-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/20 hide-scrollbar items-center">
-          <button
-            onClick={() => setActiveCategory('all')}
-            style={activeCategory === 'all' ? { background: storeSettings.themeColor } : {}}
-            className={`px-6 py-2.5 rounded-2xl whitespace-nowrap font-bold transition shadow-sm border ${activeCategory === 'all'
-                ? 'text-white border-transparent'
-                : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
-              }`}
+        <div className="relative group bg-slate-50/50 dark:bg-slate-800/20 border-b border-gray-100 dark:border-slate-800">
+          <button 
+            onClick={() => scrollCategories('right')}
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 bg-white/90 dark:bg-slate-800/90 shadow-md p-2 rounded-l-xl border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 opacity-0 group-hover:opacity-100 transition-opacity"
           >
-            الكل
+            <ChevronRight size={20} className="text-gray-600 dark:text-gray-300" />
           </button>
-          {categories.map((c) => (
+          
+          <div ref={categoriesRef} className="flex gap-3 p-5 overflow-x-auto hide-scrollbar items-center scroll-smooth">
             <button
-              key={c.id}
-              onClick={() => setActiveCategory(c.id)}
-              style={activeCategory === c.id ? { background: storeSettings.themeColor } : {}}
-              className={`px-6 py-2.5 rounded-2xl whitespace-nowrap font-bold transition shadow-sm border ${activeCategory === c.id
+              onClick={() => setActiveCategory('all')}
+              style={activeCategory === 'all' ? { background: storeSettings.themeColor } : {}}
+              className={`px-6 py-2.5 rounded-2xl whitespace-nowrap font-bold transition shadow-sm border ${activeCategory === 'all'
                   ? 'text-white border-transparent'
                   : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
                 }`}
             >
-              {c.name}
+              الكل
             </button>
-          ))}
+            {categories.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setActiveCategory(c.id)}
+                style={activeCategory === c.id ? { background: storeSettings.themeColor } : {}}
+                className={`px-6 py-2.5 rounded-2xl whitespace-nowrap font-bold transition shadow-sm border ${activeCategory === c.id
+                    ? 'text-white border-transparent'
+                    : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700'
+                  }`}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+
+          <button 
+            onClick={() => scrollCategories('left')}
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 bg-white/90 dark:bg-slate-800/90 shadow-md p-2 rounded-r-xl border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <ChevronLeft size={20} className="text-gray-600 dark:text-gray-300" />
+          </button>
         </div>
 
         {/* Product Catalog Grid */}
@@ -779,7 +1095,7 @@ export default function POS() {
       </div>
 
       {/* Cart Sidebar */}
-      <div className="w-1/3 min-w-[420px] bg-white dark:bg-slate-800 flex flex-col z-20 shadow-2xl relative">
+      <div className={`w-full pb-16 lg:pb-0 lg:w-1/3 min-w-0 lg:min-w-[320px] xl:min-w-[420px] bg-white dark:bg-slate-800 flex flex-col z-20 shadow-2xl relative ${mobileView === 'catalog' ? 'hidden lg:flex' : 'flex'}`}>
         <div
           style={{
             background: `linear-gradient(160deg, ${storeSettings.themeColor} 0%, ${storeSettings.themeColor}dd 100%)`,
@@ -843,7 +1159,7 @@ export default function POS() {
                         <span className="font-bold text-slate-800 dark:text-slate-100">{c.name}</span>
                         <span className="text-[10px] text-slate-400 font-mono" dir="ltr">{c.phone}</span>
                       </div>
-                      <div className="bg-indigo-600 px-3 py-1.5 rounded-lg text-white font-mono text-[10px] font-black">{c.custom_id || c.id.substring(0, 6)}</div>
+                      <div className="bg-indigo-600 px-3 py-1.5 rounded-lg text-white font-mono text-[10px] font-black">{c.card_number || c.custom_id || c.id.substring(0, 6)}</div>
                     </button>
                   ))}
                 </div>
@@ -860,46 +1176,46 @@ export default function POS() {
         </div>
 
         {/* Cart Listing */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50 dark:bg-slate-900/50" style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50 dark:bg-slate-900/50" style={{ scrollbarWidth: 'thin' }}>
           {cart.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-600 transition-opacity opacity-70">
-              <ShoppingCart size={90} className="mb-6 opacity-30 drop-shadow-md" />
-              <p className="text-2xl font-semibold">السلة فارغة</p>
-              <p className="text-sm mt-2 opacity-70">أضف بعض المنتجات للبدء بحساب الفاتورة.</p>
+              <ShoppingCart size={70} className="mb-4 opacity-30 drop-shadow-md" />
+              <p className="text-xl font-semibold">السلة فارغة</p>
+              <p className="text-xs mt-2 opacity-70">أضف بعض المنتجات للبدء بحساب الفاتورة.</p>
             </div>
           ) : (
             cart.map((item) => (
-              <div key={item.id} className="bg-white dark:bg-slate-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col gap-3 relative overflow-hidden group hover:shadow-md transition-shadow">
+              <div key={item.id} className="bg-white dark:bg-slate-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-slate-700 flex flex-col gap-2 relative overflow-hidden group hover:shadow-md transition-shadow">
                 <div className="flex justify-between items-start">
-                  <h4 className="font-bold text-gray-800 dark:text-gray-100 leading-tight w-4/5 text-base">{item.name}</h4>
-                  <button onClick={() => removeFromCart(item.id)} className="text-red-400 hover:text-red-600 dark:text-red-500 transition-colors bg-red-50 dark:bg-red-900/20 p-2.5 rounded-xl opacity-0 group-hover:opacity-100 absolute left-4 top-4 border border-transparent hover:border-red-100 dark:hover:border-red-900/50">
-                    <Trash2 size={18} />
+                  <h4 className="font-bold text-gray-800 dark:text-gray-100 leading-tight w-4/5 text-sm">{item.name}</h4>
+                  <button onClick={() => removeFromCart(item.id)} className="text-red-400 hover:text-red-600 dark:text-red-500 transition-colors bg-red-50 dark:bg-red-900/20 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 absolute left-3 top-3 border border-transparent hover:border-red-100 dark:hover:border-red-900/50">
+                    <Trash2 size={16} />
                   </button>
                 </div>
-                <div className="flex items-center justify-between pt-3 mt-1 border-t border-gray-50 dark:border-slate-700/50">
+                <div className="flex items-center justify-between pt-2 mt-0.5 border-t border-gray-50 dark:border-slate-700/50">
                   <div className="flex flex-col">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">سعر الوحدة:</label>
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <label className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">سعر الوحدة:</label>
                       <input
                         type="number"
                         dir="ltr"
                         value={item.sale_price}
                         onChange={(e) => updatePrice(item.id, parseFloat(e.target.value) || 0)}
-                        className="w-20 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-none rounded-lg px-2 py-1 text-sm font-black focus:ring-1 focus:ring-indigo-400 transition text-center"
+                        className="w-16 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-none rounded-md px-1.5 py-0.5 text-xs font-black focus:ring-1 focus:ring-indigo-400 transition text-center"
                       />
                     </div>
-                    <span className="font-black text-xl text-indigo-600 dark:text-indigo-400">
-                      {(item.sale_price * item.quantity).toFixed(2)} <span className="text-xs text-gray-500">{storeSettings.currency}</span>
+                    <span className="font-black text-lg text-indigo-600 dark:text-indigo-400">
+                      {(item.sale_price * item.quantity).toFixed(2)} <span className="text-[10px] text-gray-500">{storeSettings.currency}</span>
                     </span>
                   </div>
 
-                  <div className="flex items-center bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-xl p-1 shadow-inner">
-                    <button onClick={() => updateQuantity(item.id, item.quantity - 1)} className="p-2 hover:bg-white dark:hover:bg-slate-600 rounded-lg text-gray-600 dark:text-gray-300 transition-colors shadow-sm">
-                      <Minus size={16} strokeWidth={3} />
+                  <div className="flex items-center bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg p-0.5 shadow-inner">
+                    <button onClick={() => updateQuantity(item.id, item.quantity - 1)} className="p-1.5 hover:bg-white dark:hover:bg-slate-600 rounded-md text-gray-600 dark:text-gray-300 transition-colors shadow-sm">
+                      <Minus size={14} strokeWidth={3} />
                     </button>
-                    <span className="w-10 text-center text-base font-bold dark:text-white">{item.quantity}</span>
-                    <button onClick={() => updateQuantity(item.id, item.quantity + 1)} className="p-2 hover:bg-white dark:hover:bg-slate-600 rounded-lg text-gray-600 dark:text-gray-300 transition-colors shadow-sm">
-                      <Plus size={16} strokeWidth={3} />
+                    <span className="w-8 text-center text-sm font-bold dark:text-white">{item.quantity}</span>
+                    <button onClick={() => updateQuantity(item.id, item.quantity + 1)} className="p-1.5 hover:bg-white dark:hover:bg-slate-600 rounded-md text-gray-600 dark:text-gray-300 transition-colors shadow-sm">
+                      <Plus size={14} strokeWidth={3} />
                     </button>
                   </div>
                 </div>
@@ -909,8 +1225,8 @@ export default function POS() {
         </div>
 
         {/* Footer Checkout */}
-        <div className="p-4 bg-white dark:bg-slate-800 border-t border-gray-100 dark:border-slate-700 shadow-2xl">
-          <div className="space-y-3 mb-4 px-1">
+        <div className="p-3 bg-white dark:bg-slate-800 border-t border-gray-100 dark:border-slate-700 shadow-2xl">
+          <div className="space-y-2 mb-3 px-1">
             <div className="flex justify-between items-center text-sm font-bold text-slate-500 dark:text-slate-400">
               <span>المجموع: <span className="text-slate-800 dark:text-slate-200 text-lg">{subtotal.toFixed(2)}</span></span>
               <div className="flex items-center gap-2 bg-orange-100/50 dark:bg-orange-900/30 px-4 py-2 rounded-2xl border-2 border-orange-200 dark:border-orange-800/50 shadow-sm transition-all focus-within:border-orange-400 focus-within:ring-2 focus-within:ring-orange-100">
@@ -926,9 +1242,20 @@ export default function POS() {
 
             <div className="flex justify-between items-center pt-3 border-t border-slate-100 dark:border-slate-700/50">
               <span className="text-xs font-black text-slate-400 uppercase tracking-widest">الإجمالي النهائي</span>
-              <span className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-tighter">
-                {total.toFixed(2)} <span className="text-xs text-slate-400 font-bold tracking-normal">{storeSettings.currency}</span>
-              </span>
+              <div className="flex flex-col items-end">
+                <span className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-tighter">
+                  {total.toFixed(2)} <span className="text-xs text-slate-400 font-bold tracking-normal">{storeSettings.currency}</span>
+                </span>
+                {cart.length > 0 && (
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-md mt-1 border ${
+                    profit >= 0 
+                      ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/30 border-emerald-100 dark:border-emerald-800' 
+                      : 'text-red-500 bg-red-50 dark:bg-red-900/30 border-red-100 dark:border-red-800'
+                  }`}>
+                    ربح الفاتورة: {profit.toFixed(2)} {storeSettings.currency}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1052,6 +1379,70 @@ export default function POS() {
           </div>
         </div>
       )}
+
+      {/* Camera Scanner Modal */}
+      {showCameraScanner && (
+        <div className="fixed inset-0 bg-black z-[200] flex flex-col">
+          <div className="flex justify-between items-center p-4 bg-black text-white">
+            <h3 className="font-bold flex items-center gap-2"><Camera size={20} /> مسح الباركود بالكاميرا</h3>
+            <button onClick={handleCloseCamera} className="bg-white/20 p-2 rounded-full hover:bg-white/30 transition-colors"><X size={20} /></button>
+          </div>
+          <div className="flex-1 relative flex flex-col items-center justify-center bg-black p-4">
+            <div id="reader" className="w-full max-w-md mx-auto rounded-2xl overflow-hidden shadow-2xl bg-white/5"></div>
+            
+            {/* Scanned Product Popup */}
+            {scannedProduct && (
+              <div className="absolute bottom-10 left-4 right-4 bg-white dark:bg-slate-800 p-5 rounded-3xl shadow-2xl z-[210] animate-in slide-in-from-bottom-10 max-w-md mx-auto">
+                <div className="flex items-start gap-4 border-b border-gray-100 dark:border-slate-700 pb-4 mb-4">
+                  <div className="bg-emerald-100 text-emerald-600 p-3 rounded-2xl shrink-0"><Check size={24} strokeWidth={3} /></div>
+                  <div className="flex-1">
+                    <h4 className="font-black text-lg text-slate-800 dark:text-white leading-tight mb-1">{scannedProduct.name}</h4>
+                    <p className="text-emerald-600 font-bold">{scannedProduct.sale_price} {storeSettings.currency}</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-4 mb-6">
+                  <label className="font-bold text-slate-600 dark:text-slate-300">الكمية:</label>
+                  <div className="flex flex-1 items-center bg-gray-50 dark:bg-slate-700 rounded-xl p-1 border border-gray-200 dark:border-slate-600">
+                    <button onClick={() => setScanQty(Math.max(1, scanQty - 1))} className="p-3 hover:bg-white dark:hover:bg-slate-600 rounded-lg text-gray-600 dark:text-gray-300 shadow-sm"><Minus size={18} /></button>
+                    <span className="flex-1 text-center font-black text-xl dark:text-white">{scanQty}</span>
+                    <button onClick={() => setScanQty(scanQty + 1)} className="p-3 hover:bg-white dark:hover:bg-slate-600 rounded-lg text-gray-600 dark:text-gray-300 shadow-sm"><Plus size={18} /></button>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button onClick={handleConfirmScanAdd} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl shadow-lg shadow-indigo-200 dark:shadow-none hover:bg-indigo-700 transition">إضافة للفاتورة</button>
+                  <button onClick={() => {
+                    setScannedProduct(null);
+                    if (html5QrCode && html5QrCode.getState() === 3) html5QrCode.resume();
+                  }} className="bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 font-bold px-6 py-4 rounded-xl hover:bg-gray-200 dark:hover:bg-slate-600 transition">تخطي</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Bottom Navigation (Visible only on small screens) */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-gray-200 dark:border-slate-800 shadow-[0_-10px_30px_rgba(0,0,0,0.1)] z-[100] flex items-center justify-around px-2 pb-5 pt-2">
+        <button 
+          onClick={() => setMobileView('catalog')}
+          className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${mobileView === 'catalog' ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 shadow-inner' : 'text-gray-400 hover:text-gray-600'}`}
+        >
+          <Box size={20} className={mobileView === 'catalog' ? 'animate-bounce' : ''} />
+          <span className="text-[11px] font-bold mt-1">المنتجات</span>
+        </button>
+        <button 
+          onClick={() => setMobileView('cart')}
+          className={`flex flex-col items-center p-2 rounded-xl flex-1 relative transition-all ${mobileView === 'cart' ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 shadow-inner' : 'text-gray-400 hover:text-gray-600'}`}
+        >
+          <ShoppingCart size={20} className={mobileView === 'cart' ? 'animate-bounce' : ''} />
+          <span className="text-[11px] font-bold mt-1">الفاتورة</span>
+          {cart.length > 0 && (
+             <span className="absolute top-1 right-[25%] bg-red-500 text-white text-[10px] font-black w-5 h-5 flex items-center justify-center rounded-full shadow-md animate-pulse border-2 border-white dark:border-slate-800">{cart.length}</span>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

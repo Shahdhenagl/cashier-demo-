@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Order, StoreSettings } from '../store/useStore';
-import { CheckCircle2, Printer, Download, Phone, User } from 'lucide-react';
+import { CheckCircle2, Printer, Download, Phone, User, MapPin } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 export default function PublicInvoice() {
@@ -29,7 +29,8 @@ export default function PublicInvoice() {
             phone: s.phone,
             phone2: s.phone2,
             whatsappCountryCode: s.whatsapp_country_code,
-            initial_balance: s.initial_balance
+            initial_balance: s.initial_balance,
+            locationUrl: s.location_url
           });
         }
 
@@ -60,7 +61,7 @@ export default function PublicInvoice() {
               .lte('created_at', o.created_at);
             
             if (allCustOrders) {
-              debtBefore = allCustOrders.reduce((sum: number, ord: any) => {
+              debtBefore = allCustOrders.reduce((sum, ord) => {
                 if (ord.id === o.id) return sum;
                 if (ord.type === 'payment') return sum - ord.paid_amount;
                 if (ord.type === 'return') return sum;
@@ -195,6 +196,16 @@ export default function PublicInvoice() {
          >
             <Phone size={18} /> اتصل بنا
          </a>
+         {settings.locationUrl && (
+           <a 
+              href={settings.locationUrl} 
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-sky-600 text-white px-4 sm:px-6 py-3 rounded-xl font-bold shadow-md hover:bg-sky-700 transition text-sm"
+           >
+              <MapPin size={18} /> المقر
+           </a>
+         )}
       </div>
 
       {/* Invoice Area */}

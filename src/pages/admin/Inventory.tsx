@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore, type Product } from '../../store/useStore';
-import { Plus, Edit2, EyeOff, Eye, Search, X, Tag, FileText, Table as TableIcon, Box, AlertTriangle, TrendingUp } from 'lucide-react';
+import { Plus, Edit2, EyeOff, Eye, Search, X, Tag, FileText, Table as TableIcon, Box, AlertTriangle, TrendingUp, ScanLine, CheckCircle2 } from 'lucide-react';
+import { normalizeArabic } from '../../utils/textUtils';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -15,6 +16,38 @@ export default function Inventory() {
   
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [scanSuccess, setScanSuccess] = useState(false);
+
+  const playSuccessSound = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(800, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch (e) {
+      console.log('Audio not supported', e);
+    }
+  };
+
+  const handleBarcodeKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault(); // Prevent form submission
+      if (formData.barcode.trim().length > 3) {
+        playSuccessSound();
+        setScanSuccess(true);
+        setTimeout(() => setScanSuccess(false), 1500);
+      }
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -26,8 +59,12 @@ export default function Inventory() {
     category_id: categories[0]?.id || ''
   });
 
+  const normalizedSearch = normalizeArabic(searchQuery);
+  const searchTerms = normalizedSearch.split(' ').filter(t => t.trim() !== '');
+
   const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.includes(searchQuery) || (p.barcode && p.barcode.includes(searchQuery));
+    const normalizedName = normalizeArabic(p.name);
+    const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => normalizedName.includes(term)) || (p.barcode && p.barcode.includes(searchQuery));
     const matchesStock = showLowStock ? p.stock_quantity < 5 : true;
     const matchesHidden = showHidden ? true : !p.is_hidden; // بالإفتراضي نخفي المنتجات المخفية
     return matchesSearch && matchesStock && matchesHidden;
@@ -272,22 +309,42 @@ export default function Inventory() {
       {/* ADD PRODUCT MODAL */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-200">
-            <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b flex justify-between items-center bg-slate-50 shrink-0">
               <h2 className="text-xl font-bold text-slate-800">{editingProductId ? 'تعديل بيانات المنتج' : 'إضافة منتج جديد'}</h2>
               <button onClick={() => { setShowAddModal(false); setEditingProductId(null); }} className="text-slate-400 hover:text-slate-600 bg-white p-2 rounded-xl shadow-sm border border-slate-200">
                 <X size={20} />
               </button>
             </div>
-            <form onSubmit={submitProduct} className="p-6 space-y-4">
+            <form onSubmit={submitProduct} className="p-6 space-y-4 overflow-y-auto">
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
                   <label className="block text-sm font-bold text-slate-700 mb-1">اسم المنتج <span className="text-red-500">*</span></label>
                   <input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any} className="w-full bg-slate-50 border border-slate-200 py-3 px-4 rounded-xl focus:ring-2 focus:outline-none" />
                 </div>
-                <div className="col-span-2">
-                  <label className="block text-sm font-bold text-slate-700 mb-1">الباركود</label>
-                  <input type="text" dir="ltr" value={formData.barcode} onChange={e => setFormData({...formData, barcode: e.target.value})} style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any} className="w-full bg-slate-50 border border-slate-200 py-3 px-4 rounded-xl focus:ring-2 focus:outline-none text-left" />
+                <div className="col-span-2 relative group">
+                  <div className="flex justify-between items-end mb-1">
+                    <label className="block text-sm font-bold text-slate-700">الباركود</label>
+                    <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md flex items-center gap-1 opacity-0 group-focus-within:opacity-100 transition-opacity">
+                      <ScanLine size={12} />
+                      ضع المؤشر هنا واستخدم جهاز الـ POS للفحص
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <input 
+                      type="text" 
+                      dir="ltr" 
+                      value={formData.barcode} 
+                      onChange={e => setFormData({...formData, barcode: e.target.value})} 
+                      onKeyDown={handleBarcodeKeyDown}
+                      style={{ '--tw-ring-color': scanSuccess ? '#10b981' : storeSettings.themeColor + '40' } as any} 
+                      className={`w-full bg-slate-50 border py-3 px-4 rounded-xl focus:ring-2 focus:outline-none text-left font-mono font-bold transition-colors ${scanSuccess ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`} 
+                      placeholder="امسح الباركود هنا..."
+                    />
+                    {scanSuccess && (
+                      <CheckCircle2 className="absolute left-3 top-3.5 text-emerald-500 animate-in zoom-in" size={20} />
+                    )}
+                  </div>
                 </div>
                 <div className="col-span-2">
                   <label className="block text-sm font-bold text-slate-700 mb-1">سعر البيع الافتراضي <span className="text-red-500">*</span></label>

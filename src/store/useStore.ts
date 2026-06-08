@@ -22,6 +22,7 @@ export interface Category {
 export interface OrderItem extends Product {
   quantity: number;
   returned_quantity: number;
+  refunded_amount?: number;
 }
 
 export interface Customer {
@@ -30,6 +31,7 @@ export interface Customer {
   phone: string;
   timestamp: string;
   custom_id?: string;
+  card_number?: string;
 }
 
 export interface Supplier {
@@ -81,12 +83,15 @@ export interface Order {
   paid_visa: number;
   paid_wallet: number;
   paid_instapay: number;
-  type: 'sale' | 'payment';
+  type: 'sale' | 'payment' | 'previous_debt';
   date: string;
   payment_method: 'cash' | 'visa' | 'wallet' | 'instapay';
   customer?: Customer;
   cashier_name?: string;
   isOffline?: boolean;
+  is_deleted?: boolean;
+  deleted_at?: string | null;
+  deletion_reason?: string | null;
 }
 
 export interface Expense {
@@ -102,6 +107,48 @@ export interface Expense {
   date: string;
 }
 
+export interface FinancingAccount {
+  id: string;
+  type: 'loan' | 'association';
+  lender_name: string;
+  lender_phone: string;
+  lender_details: string;
+  description: string;
+  principal_amount: number;
+  collection_amount: number;
+  collection_date: string;
+  installment_count: number;
+  status: 'open' | 'closed';
+  created_at: string;
+}
+
+export interface FinancingPayment {
+  id: string;
+  account_id: string;
+  payment_type: 'collection' | 'repayment';
+  due_date: string;
+  amount: number;
+  paid_amount: number;
+  remaining_amount: number;
+  status: 'pending' | 'paid';
+  paid_at?: string | null;
+  expense_id?: string | null;
+  note?: string | null;
+}
+
+export interface FinancingTransaction {
+  id: string;
+  account_id: string;
+  payment_id: string;
+  transaction_type: 'collection' | 'repayment';
+  amount: number;
+  remaining_after: number;
+  payment_method: 'cash' | 'visa' | 'wallet' | 'instapay';
+  expense_id?: string | null;
+  note?: string | null;
+  created_at: string;
+}
+
 export interface StoreSettings {
   name: string;
   currency: string;
@@ -113,6 +160,7 @@ export interface StoreSettings {
   phone2: string;
   whatsappCountryCode: string;
   initial_balance: number;
+  locationUrl?: string;
 }
 
 export interface Employee {
@@ -122,6 +170,9 @@ export interface Employee {
   phone: string;
   working_hours: string;
   monthly_salary: number;
+  annual_leave_balance: number;
+  hire_date: string;
+  is_active: boolean;
   created_at: string;
 }
 
@@ -129,7 +180,7 @@ export interface EmployeeTransaction {
   id: string;
   employee_id: string;
   amount: number;
-  type: 'salary' | 'advance';
+  type: 'salary' | 'advance' | 'incentive';
   payment_method: 'cash' | 'visa' | 'wallet' | 'instapay';
   paid_cash: number;
   paid_visa: number;
@@ -137,6 +188,19 @@ export interface EmployeeTransaction {
   paid_instapay: number;
   month: string;
   deductions: number;
+  note: string;
+  created_at: string;
+}
+
+export interface EmployeeLeave {
+  id: string;
+  employee_id: string;
+  start_date: string;
+  end_date: string;
+  days_count: number;
+  leave_type: 'paid' | 'unpaid';
+  deduction_amount: number;
+  month: string;
   note: string;
   created_at: string;
 }
@@ -152,6 +216,9 @@ interface CashierStore {
   cart: OrderItem[];
   orders: Order[];
   expenses: Expense[];
+  financingAccounts: FinancingAccount[];
+  financingPayments: FinancingPayment[];
+  financingTransactions: FinancingTransaction[];
   purchaseInvoices: PurchaseInvoice[];
   invoiceCounter: number;
   activeInvoiceId: string;
@@ -160,6 +227,7 @@ interface CashierStore {
   activeCashier: Cashier | null;
   employees: Employee[];
   employeeTransactions: EmployeeTransaction[];
+  employeeLeaves: EmployeeLeave[];
 
   // Data loading
   loadAll: () => Promise<void>;
@@ -178,12 +246,13 @@ interface CashierStore {
     total: number, 
     customerDetails?: { name: string; phone: string; custom_id?: string }, 
     paidAmount?: number, 
-    type?: 'sale' | 'payment', 
+    type?: 'sale' | 'payment' | 'previous_debt', 
     paymentMethod?: string,
     splitPayments?: { cash: number; visa: number; wallet: number; instapay: number },
     cashierName?: string
   ) => Promise<string>;
-  processReturn: (orderId: string, productId: string, returnQty: number) => Promise<boolean>;
+  processReturn: (orderId: string, returns: { productId: string, returnQty: number, refundAmount: number }[]) => Promise<boolean>;
+  deleteOrder: (orderId: string, reason?: string) => Promise<boolean>;
 
   // Admin
   loadAnalyticsData: (startDate?: string, endDate?: string) => Promise<Order[]>;
@@ -197,12 +266,21 @@ interface CashierStore {
   updateExpense: (id: string, expense: Partial<Expense>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
 
+  // Financing
+  loadFinancing: () => Promise<void>;
+  addFinancingAccount: (
+    account: Omit<FinancingAccount, 'id' | 'status' | 'created_at'>,
+    repayments: { due_date: string; amount: number; note?: string }[]
+  ) => Promise<void>;
+  settleFinancingPayment: (paymentId: string, amount?: number, paymentMethod?: 'cash' | 'visa' | 'wallet' | 'instapay') => Promise<void>;
+
   // Suppliers
-  addSupplier: (supplier: Omit<Supplier, 'id' | 'created_at'>) => Promise<void>;
+  addSupplier: (supplier: Omit<Supplier, 'id' | 'created_at'>) => Promise<Supplier | null>;
   updateSupplier: (id: string, supplier: Partial<Supplier>) => Promise<void>;
   deleteSupplier: (id: string) => Promise<void>;
 
   // Customers
+  addCustomer: (customer: Omit<Customer, 'id' | 'timestamp'>) => Promise<Customer | null>;
   updateCustomer: (id: string, customer: Partial<Customer>) => Promise<void>;
 
   // Cashiers
@@ -217,10 +295,21 @@ interface CashierStore {
   updateEmployee: (id: string, employee: Partial<Employee>) => Promise<void>;
   deleteEmployee: (id: string) => Promise<void>;
   addEmployeeTransaction: (transaction: Omit<EmployeeTransaction, 'id' | 'created_at'>) => Promise<void>;
+  updateEmployeeTransaction: (id: string, transaction: Partial<Omit<EmployeeTransaction, 'id' | 'created_at'>>) => Promise<void>;
+  deleteEmployeeTransaction: (id: string) => Promise<void>;
+  addEmployeeLeave: (leave: Omit<EmployeeLeave, 'id' | 'created_at'>) => Promise<void>;
+  updateEmployeeLeave: (id: string, leave: Partial<Omit<EmployeeLeave, 'id' | 'created_at'>>) => Promise<void>;
+  deleteEmployeeLeave: (id: string) => Promise<void>;
 
   // Purchases
   loadPurchaseInvoices: () => Promise<void>;
   addPurchaseInvoice: (
+    invoice: Omit<PurchaseInvoice, 'id' | 'created_at' | 'items' | 'paid_cash' | 'paid_visa' | 'paid_wallet' | 'paid_instapay'>, 
+    items: PurchaseItem[],
+    splitPayments?: { cash: number; visa: number; wallet: number; instapay: number }
+  ) => Promise<void>;
+  updatePurchaseInvoice: (
+    invoiceId: string,
     invoice: Omit<PurchaseInvoice, 'id' | 'created_at' | 'items' | 'paid_cash' | 'paid_visa' | 'paid_wallet' | 'paid_instapay'>, 
     items: PurchaseItem[],
     splitPayments?: { cash: number; visa: number; wallet: number; instapay: number }
@@ -260,7 +349,77 @@ function mapSettings(row: Record<string, unknown>): StoreSettings {
     phone2: (row.phone2 as string) ?? '',
     whatsappCountryCode: (row.whatsapp_country_code as string) ?? '2',
     initial_balance: (row.initial_balance as number) ?? 0,
+    locationUrl: (row.location_url as string) ?? '',
   };
+}
+
+function isRefundedAmountSchemaError(error: unknown): boolean {
+  const message = String((error as any)?.message || error || '').toLowerCase();
+  return message.includes('refunded_amount');
+}
+
+const LOW_STOCK_THRESHOLD = 3;
+
+function getActorName(state: CashierStore): string {
+  if (state.activeCashier?.name) return state.activeCashier.name;
+  if (typeof sessionStorage !== 'undefined') {
+    return sessionStorage.getItem('active_cashier_name') || 'مدير النظام';
+  }
+  return 'مدير النظام';
+}
+
+function getPublicInvoiceUrl(invoiceId: string): string {
+  if (typeof window === 'undefined') return `https://cashier-branch3.vercel.app/view-invoice/${invoiceId}`;
+  const baseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'https://cashier-branch3.vercel.app'
+    : window.location.origin;
+  return `${baseUrl}/view-invoice/${invoiceId}`;
+}
+
+function sendTelegramAlert(payload: Record<string, unknown>) {
+  if (typeof fetch === 'undefined') return;
+  fetch('/api/telegram-alert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    console.warn('Telegram alert failed:', error);
+  });
+}
+
+function notifyLowStock(
+  beforeProducts: Product[],
+  cartItems: OrderItem[],
+  afterProducts: Product[],
+  actor: string,
+  currency: string
+) {
+  const affected = cartItems
+    .map((item) => {
+      const before = beforeProducts.find((product) => product.id === item.id);
+      const after = afterProducts.find((product) => product.id === item.id);
+      const previousQuantity = Number(before?.stock_quantity ?? 0);
+      const currentQuantity = Number(after?.stock_quantity ?? previousQuantity);
+      return {
+        name: item.name,
+        previous_quantity: previousQuantity,
+        moved_quantity: Number(item.quantity) || 0,
+        stock_quantity: currentQuantity,
+        threshold: LOW_STOCK_THRESHOLD,
+      };
+    })
+    .filter((product) =>
+      product.stock_quantity <= LOW_STOCK_THRESHOLD &&
+      product.previous_quantity > LOW_STOCK_THRESHOLD
+    );
+
+  if (affected.length === 0) return;
+  sendTelegramAlert({
+    type: 'stock_low',
+    actor,
+    currency,
+    products: affected,
+  });
 }
 
 // ─── Store ───────────────────────────────────────────────────
@@ -276,6 +435,7 @@ export const useStore = create<CashierStore>((set, get) => ({
     phone2: '',
     whatsappCountryCode: '2',
     initial_balance: 0,
+    locationUrl: '',
   },
   products: [],
   categories: [],
@@ -285,9 +445,13 @@ export const useStore = create<CashierStore>((set, get) => ({
   cart: [],
   orders: [],
   expenses: [],
+  financingAccounts: [],
+  financingPayments: [],
+  financingTransactions: [],
   purchaseInvoices: [],
   employees: [],
   employeeTransactions: [],
+  employeeLeaves: [],
   invoiceCounter: 1,
   activeInvoiceId: '1',
   isLoading: false,
@@ -336,7 +500,7 @@ export const useStore = create<CashierStore>((set, get) => ({
   loadAll: async () => {
     set({ isLoading: true, dbError: null });
     try {
-      const [settingsRes, categoriesRes, productsRes, customersRes, ordersRes, counterRes, cashiersRes, employeesRes, employeeTransactionsRes] =
+      const [settingsRes, categoriesRes, productsRes, customersRes, ordersRes, counterRes, cashiersRes, employeesRes, employeeTransactionsRes, employeeLeavesRes] =
         await Promise.all([
           supabase.from('store_settings').select('*').limit(1).maybeSingle(),
           supabase.from('categories').select('*').order('name'),
@@ -346,11 +510,12 @@ export const useStore = create<CashierStore>((set, get) => ({
             .from('orders')
             .select('*, customers(*), order_items(*, products(*))')
             .order('created_at', { ascending: false })
-            .limit(200),
+            .limit(1000),
           supabase.from('invoice_counter').select('current_value').limit(1).maybeSingle(),
           supabase.from('cashiers').select('*').order('created_at', { ascending: false }),
           supabase.from('employees').select('*').order('created_at', { ascending: false }),
           supabase.from('employee_transactions').select('*').order('created_at', { ascending: false }),
+          supabase.from('employee_leaves').select('*').order('created_at', { ascending: false }),
         ]);
 
       const settings = settingsRes.data ? mapSettings(settingsRes.data as Record<string, unknown>) : get().storeSettings;
@@ -360,6 +525,7 @@ export const useStore = create<CashierStore>((set, get) => ({
         name: c.name as string,
         phone: c.phone as string,
         custom_id: c.custom_id as string,
+        card_number: c.card_number as string,
         timestamp: c.created_at as string,
       }));
 
@@ -379,6 +545,7 @@ export const useStore = create<CashierStore>((set, get) => ({
             category_id: (prod.category_id as string) ?? '',
             quantity: i.quantity as number,
             returned_quantity: (i.returned_quantity as number) ?? 0,
+            refunded_amount: (i.refunded_amount as number) ?? 0,
           };
         });
         return {
@@ -394,12 +561,16 @@ export const useStore = create<CashierStore>((set, get) => ({
           date: o.created_at as string,
           items,
           cashier_name: (o.cashier_name as string) ?? undefined,
+          is_deleted: Boolean(o.is_deleted),
+          deleted_at: (o.deleted_at as string) ?? null,
+          deletion_reason: (o.deletion_reason as string) ?? null,
           customer: custRow
             ? { 
                 id: custRow.id as string, 
                 name: custRow.name as string, 
                 phone: custRow.phone as string, 
                 custom_id: custRow.custom_id as string,
+                card_number: custRow.card_number as string,
                 timestamp: custRow.created_at as string 
               }
             : undefined,
@@ -427,6 +598,7 @@ export const useStore = create<CashierStore>((set, get) => ({
           : (sessionStorage.getItem('cashier_pos_auth') === 'true' ? { id: 'master', name: 'المدير', pin: '123456', phone: '', photo_url: '', created_at: '' } : null),
         employees: (employeesRes.data ?? []) as Employee[],
         employeeTransactions: (employeeTransactionsRes.data ?? []) as EmployeeTransaction[],
+        employeeLeaves: (employeeLeavesRes.data ?? []) as EmployeeLeave[],
       });
 
       // Fetch expenses separately to avoid breaking the whole loadAll if the table is missing
@@ -467,6 +639,7 @@ export const useStore = create<CashierStore>((set, get) => ({
 
       // Fetch purchase invoices
       get().loadPurchaseInvoices();
+      get().loadFinancing();
 
       // Setup Realtime subscriptions
       get().setupRealtime();
@@ -564,6 +737,7 @@ export const useStore = create<CashierStore>((set, get) => ({
               name: existingCust.name,
               phone: existingCust.phone,
               custom_id: existingCust.custom_id,
+              card_number: existingCust.card_number,
               timestamp: existingCust.created_at
             };
           } else {
@@ -583,6 +757,7 @@ export const useStore = create<CashierStore>((set, get) => ({
                 name: (newCust as any).name,
                 phone: (newCust as any).phone,
                 custom_id: (newCust as any).custom_id,
+                card_number: (newCust as any).card_number,
                 timestamp: (newCust as any).created_at
               };
             }
@@ -613,11 +788,15 @@ export const useStore = create<CashierStore>((set, get) => ({
           barcode: item.barcode,
           quantity: item.quantity,
           returned_quantity: item.returned_quantity || 0,
+          refunded_amount: item.refunded_amount || 0,
           sale_price: item.sale_price,
           purchase_price: item.average_purchase_price || item.purchase_price || 0,
         }));
         const { error: itemsError } = await supabase.from('order_items').insert(itemsPayload);
-        if (itemsError) console.error("Sync Order Items Error:", itemsError);
+        if (itemsError) {
+          console.error("Sync Order Items Error:", itemsError);
+          throw itemsError;
+        }
 
         for (const item of offlineOrder.items) {
           const { data: prodData } = await supabase.from('products').select('stock_quantity').eq('id', item.id).single();
@@ -679,7 +858,7 @@ export const useStore = create<CashierStore>((set, get) => ({
   checkout: async (total, customerDetails, paidAmount = total, type = 'sale', paymentMethod = 'cash', splitPayments, cashierName) => {
     const state = get();
     const finalCashierName = cashierName || state.activeCashier?.name || 'مدير النظام';
-    if (state.cart.length === 0 && type !== 'payment') return state.activeInvoiceId;
+    if (state.cart.length === 0 && type !== 'payment' && type !== 'previous_debt') return state.activeInvoiceId;
 
     const savedPaidAmount = type === 'payment' ? paidAmount : Math.min(total, paidAmount);
 
@@ -818,6 +997,7 @@ export const useStore = create<CashierStore>((set, get) => ({
               name: (newCust as Record<string, unknown>).name as string,
               phone: (newCust as Record<string, unknown>).phone as string,
               custom_id: (newCust as Record<string, unknown>).custom_id as string,
+              card_number: (newCust as Record<string, unknown>).card_number as string,
               timestamp: (newCust as Record<string, unknown>).created_at as string,
             };
           }
@@ -904,6 +1084,24 @@ export const useStore = create<CashierStore>((set, get) => ({
       });
 
       new BroadcastChannel('cashier-sync').postMessage('sync_products');
+      sendTelegramAlert({
+        type: type === 'payment' ? 'payment' : 'sale',
+        actor: finalCashierName,
+        currency: state.storeSettings.currency,
+        invoiceId,
+        invoiceUrl: getPublicInvoiceUrl(invoiceId),
+        customer: finalCustomer?.name || 'عميل نقدي',
+        date: newOrder.date,
+        total,
+        paid: savedPaidAmount,
+        paymentMethod,
+        items: newOrder.items.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          sale_price: item.sale_price,
+        })),
+      });
+      notifyLowStock(state.products, newOrder.items, updatedProducts, finalCashierName, state.storeSettings.currency);
 
       return invoiceId;
     } catch (err) {
@@ -913,40 +1111,42 @@ export const useStore = create<CashierStore>((set, get) => ({
   },
 
   // ── Returns ────────────────────────────────────────────────
-  processReturn: async (orderId, productId, returnQty) => {
+  processReturn: async (orderId, returns) => {
     const state = get();
     const orderIndex = state.orders.findIndex((o) => o.id === orderId);
-    if (orderIndex === -1) return false;
+    if (orderIndex === -1 || returns.length === 0) return false;
 
     const order = state.orders[orderIndex];
-    const itemIndex = order.items.findIndex((i) => i.id === productId);
-    if (itemIndex === -1) return false;
-
-    const item = order.items[itemIndex];
-    const available = item.quantity - item.returned_quantity;
-    if (returnQty <= 0 || returnQty > available) return false;
-
-    const newReturnedQty = item.returned_quantity + returnQty;
 
     const executeOfflineReturn = () => {
-      const updatedItems = order.items.map((i, idx) =>
-        idx === itemIndex ? { ...i, returned_quantity: newReturnedQty } : i
-      );
+      let updatedItems = [...order.items];
+      let updatedProducts = [...state.products];
+
+      for (const ret of returns) {
+        updatedItems = updatedItems.map((i) =>
+          i.id === ret.productId ? { ...i, returned_quantity: i.returned_quantity + ret.returnQty, refunded_amount: (i.refunded_amount || 0) + ret.refundAmount } : i
+        );
+        updatedProducts = updatedProducts.map((p) =>
+          p.id === ret.productId ? { ...p, stock_quantity: p.stock_quantity + ret.returnQty } : p
+        );
+      }
+
       const updatedOrders = state.orders.map((o, idx) =>
         idx === orderIndex ? { ...o, items: updatedItems } : o
-      );
-      const updatedProducts = state.products.map((p) =>
-        p.id === productId ? { ...p, stock_quantity: p.stock_quantity + returnQty } : p
       );
 
       if (orderId.startsWith('OFF-')) {
         const updatedQueue = state.offlineQueue.map((o) => {
           if (o.id === orderId) {
+            let oItems = [...o.items];
+            for (const ret of returns) {
+              oItems = oItems.map((i: any) =>
+                i.id === ret.productId ? { ...i, returned_quantity: (i.returned_quantity || 0) + ret.returnQty, refunded_amount: (i.refunded_amount || 0) + ret.refundAmount } : i
+              );
+            }
             return {
               ...o,
-              items: o.items.map((i: any) =>
-                i.id === productId ? { ...i, returned_quantity: newReturnedQty } : i
-              ),
+              items: oItems,
             };
           }
           return o;
@@ -960,8 +1160,7 @@ export const useStore = create<CashierStore>((set, get) => ({
       } else {
         const newOfflineReturn = {
           orderId,
-          productId,
-          returnQty,
+          returns,
           date: new Date().toISOString(),
         };
         const updatedReturnsQueue = [...state.offlineReturnsQueue, newOfflineReturn];
@@ -982,50 +1181,177 @@ export const useStore = create<CashierStore>((set, get) => ({
         throw new Error("No network connectivity");
       }
 
-      const orderItemRow = await supabase
-        .from('order_items')
-        .select('id, returned_quantity')
-        .eq('order_id', orderId)
-        .eq('product_id', productId)
-        .single();
+      let updatedItems = [...order.items];
+      let updatedProducts = [...state.products];
 
-      if (orderItemRow.error) {
-        throw orderItemRow.error;
-      }
+      for (const ret of returns) {
+        const itemIndex = updatedItems.findIndex(i => i.id === ret.productId);
+        if (itemIndex === -1) continue;
+        
+        const item = updatedItems[itemIndex];
+        const newReturnedQty = item.returned_quantity + ret.returnQty;
+        const newRefundedAmt = (item.refunded_amount || 0) + ret.refundAmount;
 
-      if (orderItemRow.data) {
-        const { error: updateError } = await supabase
+        const orderItemRow = await supabase
           .from('order_items')
-          .update({ returned_quantity: newReturnedQty })
-          .eq('id', (orderItemRow.data as Record<string, unknown>).id as string);
-        if (updateError) throw updateError;
+          .select('id')
+          .eq('order_id', orderId)
+          .eq('product_id', ret.productId)
+          .single();
+
+        if (!orderItemRow.error && orderItemRow.data) {
+          const { error: updateError } = await supabase
+            .from('order_items')
+            .update({ returned_quantity: newReturnedQty, refunded_amount: newRefundedAmt })
+            .eq('id', (orderItemRow.data as Record<string, unknown>).id as string);
+            
+          if (updateError) {
+             throw updateError;
+          }
+        }
+
+        const product = updatedProducts.find((p) => p.id === ret.productId);
+        if (product) {
+          const { error: prodError } = await supabase
+            .from('products')
+            .update({ stock_quantity: product.stock_quantity + ret.returnQty })
+            .eq('id', ret.productId);
+          if (prodError) throw prodError;
+          
+          updatedProducts = updatedProducts.map((p) =>
+            p.id === ret.productId ? { ...p, stock_quantity: p.stock_quantity + ret.returnQty } : p
+          );
+        }
+
+        updatedItems = updatedItems.map((i) =>
+          i.id === ret.productId ? { ...i, returned_quantity: newReturnedQty, refunded_amount: newRefundedAmt } : i
+        );
       }
 
-      const product = state.products.find((p) => p.id === productId);
-      if (product) {
-        const { error: prodError } = await supabase
-          .from('products')
-          .update({ stock_quantity: product.stock_quantity + returnQty })
-          .eq('id', productId);
-        if (prodError) throw prodError;
-      }
-
-      const updatedItems = order.items.map((i, idx) =>
-        idx === itemIndex ? { ...i, returned_quantity: newReturnedQty } : i
-      );
       const updatedOrders = state.orders.map((o, idx) =>
         idx === orderIndex ? { ...o, items: updatedItems } : o
-      );
-      const updatedProducts = state.products.map((p) =>
-        p.id === productId ? { ...p, stock_quantity: p.stock_quantity + returnQty } : p
       );
 
       set({ orders: updatedOrders, products: updatedProducts });
       new BroadcastChannel('cashier-sync').postMessage('sync_products');
+      sendTelegramAlert({
+        type: 'return',
+        actor: getActorName(state),
+        currency: state.storeSettings.currency,
+        invoiceId: order.id,
+        invoiceUrl: getPublicInvoiceUrl(order.id),
+        customer: order.customer?.name || 'عميل نقدي',
+        date: new Date().toISOString(),
+        refundTotal: returns.reduce((sum, ret) => sum + (Number(ret.refundAmount) || 0), 0),
+        items: returns.map((ret) => {
+          const item = order.items.find((orderItem) => orderItem.id === ret.productId);
+          return {
+            name: item?.name || ret.productId,
+            quantity: ret.returnQty,
+            sale_price: item?.sale_price || 0,
+            total: ret.refundAmount,
+          };
+        }),
+      });
       return true;
     } catch (err) {
+      if (isRefundedAmountSchemaError(err)) {
+        console.error("Return failed because refunded_amount column is missing:", err);
+        alert("لازم تحديث قاعدة البيانات أولاً: شغّل ملف update_refunded_amount_schema.sql في Supabase عشان مبلغ المرتجع المعدل يتحفظ صح.");
+        return false;
+      }
       console.warn("Network offline or Supabase return failed. Falling back to offline return:", err);
       return executeOfflineReturn();
+    }
+  },
+
+  deleteOrder: async (orderId, reason) => {
+    const state = get();
+    const order = state.orders.find((o) => o.id === orderId);
+    if (!order || order.is_deleted || order.isOffline) return false;
+
+    const deletedAt = new Date().toISOString();
+    const deletionReason = reason?.trim() || 'حذف يدوي من شاشة الفواتير';
+    const stockRestores = order.type === 'sale'
+      ? order.items
+          .map((item) => ({
+            productId: item.id,
+            quantity: Math.max(0, (Number(item.quantity) || 0) - (Number(item.returned_quantity) || 0)),
+          }))
+          .filter((item) => item.quantity > 0)
+      : [];
+
+    try {
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({
+          is_deleted: true,
+          deleted_at: deletedAt,
+          deletion_reason: deletionReason,
+        })
+        .eq('id', orderId);
+
+      if (orderError) throw orderError;
+
+      const updatedProducts = [...state.products];
+      for (const item of stockRestores) {
+        const productIndex = updatedProducts.findIndex((p) => p.id === item.productId);
+        const localStock = productIndex >= 0 ? updatedProducts[productIndex].stock_quantity : 0;
+
+        const { data: prodData } = await supabase
+          .from('products')
+          .select('stock_quantity')
+          .eq('id', item.productId)
+          .maybeSingle();
+
+        const dbStock = (prodData?.stock_quantity ?? localStock) as number;
+        const newStock = dbStock + item.quantity;
+        const { error: productError } = await supabase
+          .from('products')
+          .update({ stock_quantity: newStock })
+          .eq('id', item.productId);
+
+        if (productError) throw productError;
+
+        if (productIndex >= 0) {
+          updatedProducts[productIndex] = {
+            ...updatedProducts[productIndex],
+            stock_quantity: localStock + item.quantity,
+          };
+        }
+      }
+
+      set({
+        orders: state.orders.map((o) =>
+          o.id === orderId
+            ? { ...o, is_deleted: true, deleted_at: deletedAt, deletion_reason: deletionReason }
+            : o
+        ),
+        products: updatedProducts,
+      });
+
+      new BroadcastChannel('cashier-sync').postMessage('sync_products');
+      sendTelegramAlert({
+        type: 'delete_invoice',
+        actor: getActorName(state),
+        currency: state.storeSettings.currency,
+        invoiceId: order.id,
+        invoiceUrl: getPublicInvoiceUrl(order.id),
+        customer: order.customer?.name || 'عميل نقدي',
+        date: deletedAt,
+        total: order.total,
+        paid: order.paid_amount,
+        reason: deletionReason,
+        items: order.items.map((item) => ({
+          name: item.name,
+          quantity: Math.max(0, item.quantity - item.returned_quantity),
+          sale_price: item.sale_price,
+        })),
+      });
+      return true;
+    } catch (err) {
+      console.error("Delete Order Error:", err);
+      return false;
     }
   },
 
@@ -1038,45 +1364,54 @@ export const useStore = create<CashierStore>((set, get) => ({
     const queue = [...state.offlineReturnsQueue];
     const failedReturns = [];
 
-    for (const returnItem of queue) {
+    for (const returnBatch of queue) {
       try {
-        const orderItemRow = await supabase
-          .from('order_items')
-          .select('id, returned_quantity')
-          .eq('order_id', returnItem.orderId)
-          .eq('product_id', returnItem.productId)
-          .single();
+        const batchReturns = Array.isArray(returnBatch.returns) ? returnBatch.returns : [returnBatch];
+        const batchOrderId = returnBatch.orderId;
 
-        if (orderItemRow.error) throw orderItemRow.error;
-
-        if (orderItemRow.data) {
-          const currentReturned = (orderItemRow.data as any).returned_quantity || 0;
-          const { error: updateError } = await supabase
+        for (const returnItem of batchReturns) {
+          const orderItemRow = await supabase
             .from('order_items')
-            .update({ returned_quantity: currentReturned + returnItem.returnQty })
-            .eq('id', (orderItemRow.data as any).id);
-          if (updateError) throw updateError;
+            .select('id, returned_quantity, refunded_amount')
+            .eq('order_id', batchOrderId)
+            .eq('product_id', returnItem.productId)
+            .single();
+
+          if (orderItemRow.error) throw orderItemRow.error;
+
+          if (orderItemRow.data) {
+            const currentReturned = (orderItemRow.data as any).returned_quantity || 0;
+            const currentRefunded = (orderItemRow.data as any).refunded_amount || 0;
+            const { error: updateError } = await supabase
+              .from('order_items')
+              .update({
+                returned_quantity: currentReturned + returnItem.returnQty,
+                refunded_amount: currentRefunded + (Number(returnItem.refundAmount) || 0),
+              })
+              .eq('id', (orderItemRow.data as any).id);
+            if (updateError) throw updateError;
+          }
+
+          const { data: prodData, error: prodGetError } = await supabase
+            .from('products')
+            .select('stock_quantity')
+            .eq('id', returnItem.productId)
+            .single();
+          
+          if (prodGetError) throw prodGetError;
+
+          const currentStock = prodData?.stock_quantity ?? 0;
+          const { error: prodError } = await supabase
+            .from('products')
+            .update({ stock_quantity: currentStock + returnItem.returnQty })
+            .eq('id', returnItem.productId);
+          
+          if (prodError) throw prodError;
         }
 
-        const { data: prodData, error: prodGetError } = await supabase
-          .from('products')
-          .select('stock_quantity')
-          .eq('id', returnItem.productId)
-          .single();
-        
-        if (prodGetError) throw prodGetError;
-
-        const currentStock = prodData?.stock_quantity ?? 0;
-        const { error: prodError } = await supabase
-          .from('products')
-          .update({ stock_quantity: currentStock + returnItem.returnQty })
-          .eq('id', returnItem.productId);
-        
-        if (prodError) throw prodError;
-
       } catch (err) {
-        console.error("Failed to sync offline return:", returnItem, err);
-        failedReturns.push(returnItem);
+        console.error("Failed to sync offline return:", returnBatch, err);
+        failedReturns.push(returnBatch);
       }
     }
 
@@ -1094,6 +1429,7 @@ export const useStore = create<CashierStore>((set, get) => ({
     let query = supabase
       .from('orders')
       .select('*, customers(*), order_items(*, products(*))')
+      .neq('is_deleted', true)
       .order('created_at', { ascending: false });
 
     if (startDate) query = query.gte('created_at', startDate);
@@ -1121,6 +1457,7 @@ export const useStore = create<CashierStore>((set, get) => ({
           category_id: (prod.category_id as string) ?? '',
           quantity: i.quantity as number,
           returned_quantity: (i.returned_quantity as number) ?? 0,
+          refunded_amount: (i.refunded_amount as number) ?? 0,
         };
       });
       return {
@@ -1136,8 +1473,11 @@ export const useStore = create<CashierStore>((set, get) => ({
         date: o.created_at as string,
         items,
         cashier_name: (o.cashier_name as string) ?? undefined,
+        is_deleted: Boolean(o.is_deleted),
+        deleted_at: (o.deleted_at as string) ?? null,
+        deletion_reason: (o.deletion_reason as string) ?? null,
         customer: custRow
-          ? { id: custRow.id as string, name: custRow.name as string, phone: custRow.phone as string, timestamp: custRow.created_at as string }
+          ? { id: custRow.id as string, name: custRow.name as string, phone: custRow.phone as string, custom_id: custRow.custom_id as string, card_number: custRow.card_number as string, timestamp: custRow.created_at as string }
           : undefined,
       };
     });
@@ -1178,6 +1518,7 @@ export const useStore = create<CashierStore>((set, get) => ({
     if (newSettings.phone2 !== undefined) mapped.phone2 = newSettings.phone2;
     if (newSettings.whatsappCountryCode !== undefined) mapped.whatsapp_country_code = newSettings.whatsappCountryCode;
     if (newSettings.initial_balance !== undefined) mapped.initial_balance = newSettings.initial_balance;
+    if (newSettings.locationUrl !== undefined) mapped.location_url = newSettings.locationUrl;
 
     const { data: existing } = await supabase.from('store_settings').select('id').limit(1).maybeSingle();
     
@@ -1197,7 +1538,7 @@ setupRealtime: () => {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'orders' },
-        async (payload: any) => {
+        async (payload) => {
           const newOrder = payload.new as any;
           
           // Fetch items for the new order to have a complete order object
@@ -1226,9 +1567,11 @@ setupRealtime: () => {
               id: customer.id,
               name: customer.name,
               phone: customer.phone,
+              custom_id: customer.custom_id,
+              card_number: customer.card_number,
               timestamp: customer.created_at
             } : undefined,
-            items: (items || []).map((i: any) => ({
+            items: (items || []).map(i => ({
               id: i.product_id,
               name: i.product_name,
               barcode: i.barcode,
@@ -1238,7 +1581,8 @@ setupRealtime: () => {
               stock_quantity: i.products?.stock_quantity || 0,
               category_id: i.products?.category_id || '',
               quantity: i.quantity,
-              returned_quantity: i.returned_quantity || 0
+              returned_quantity: i.returned_quantity || 0,
+              refunded_amount: i.refunded_amount || 0
             }))
           };
 
@@ -1249,8 +1593,37 @@ setupRealtime: () => {
       )
       .on(
         'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'orders' },
+        (payload) => {
+          const updatedOrder = payload.new as any;
+          set((state) => ({
+            orders: state.orders.map((order) =>
+              order.id === updatedOrder.id
+                ? {
+                    ...order,
+                    total: updatedOrder.total,
+                    paid_amount: updatedOrder.paid_amount,
+                    paid_cash: updatedOrder.paid_cash || 0,
+                    paid_visa: updatedOrder.paid_visa || 0,
+                    paid_wallet: updatedOrder.paid_wallet || 0,
+                    paid_instapay: updatedOrder.paid_instapay || 0,
+                    type: updatedOrder.type,
+                    payment_method: updatedOrder.payment_method,
+                    date: updatedOrder.created_at,
+                    cashier_name: updatedOrder.cashier_name,
+                    is_deleted: Boolean(updatedOrder.is_deleted),
+                    deleted_at: updatedOrder.deleted_at || null,
+                    deletion_reason: updatedOrder.deletion_reason || null,
+                  }
+                : order
+            )
+          }));
+        }
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'products' },
-        (payload: any) => {
+        (payload) => {
           const { eventType, new: newRecord, old: oldRecord } = payload;
           set((state) => {
             let updatedProducts = [...state.products];
@@ -1277,7 +1650,7 @@ setupRealtime: () => {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'invoice_counter' },
-        (payload: any) => {
+        (payload) => {
           const nextVal = (payload.new as any).current_value;
           set({ 
             invoiceCounter: nextVal,
@@ -1371,16 +1744,243 @@ setupRealtime: () => {
     set((state) => ({ expenses: state.expenses.filter((e) => e.id !== id) }));
   },
 
+  // ── Financing ─────────────────────────────────────────────
+  loadFinancing: async () => {
+    try {
+      const [accountsRes, paymentsRes, transactionsRes] = await Promise.all([
+        supabase.from('financing_accounts').select('*').order('created_at', { ascending: false }),
+        supabase.from('financing_payments').select('*').order('due_date', { ascending: true }),
+        supabase.from('financing_transactions').select('*').order('created_at', { ascending: false }),
+      ]);
+
+      if (accountsRes.error) throw accountsRes.error;
+      if (paymentsRes.error) throw paymentsRes.error;
+      if (transactionsRes.error) throw transactionsRes.error;
+
+      set({
+        financingAccounts: (accountsRes.data || []) as FinancingAccount[],
+        financingPayments: (paymentsRes.data || []) as FinancingPayment[],
+        financingTransactions: (transactionsRes.data || []) as FinancingTransaction[],
+      });
+    } catch (e) {
+      console.error("Financing tables might not exist yet:", e);
+      set({ financingAccounts: [], financingPayments: [], financingTransactions: [] });
+    }
+  },
+
+  addFinancingAccount: async (account, repayments) => {
+    const { data: accountData, error: accountError } = await supabase
+      .from('financing_accounts')
+      .insert({
+        type: account.type,
+        lender_name: account.lender_name,
+        lender_phone: account.lender_phone,
+        lender_details: account.lender_details,
+        description: account.description,
+        principal_amount: account.principal_amount,
+        collection_amount: account.collection_amount,
+        collection_date: account.collection_date,
+        installment_count: account.installment_count,
+        status: 'open',
+      })
+      .select()
+      .single();
+
+    if (accountError) {
+      console.error("Add Financing Account Error:", accountError);
+      alert('تعذر حفظ السلفة/الجمعية. تأكد من تشغيل ملف update_financing_schema.sql في Supabase.');
+      return;
+    }
+
+    const savedAccount = accountData as FinancingAccount;
+    const paymentsPayload = [
+      {
+        account_id: savedAccount.id,
+        payment_type: 'collection',
+        due_date: account.collection_date,
+        amount: account.collection_amount,
+        paid_amount: 0,
+        remaining_amount: account.collection_amount,
+        status: 'pending',
+        note: 'تحصيل مبلغ التمويل',
+      },
+      ...repayments.map((payment, index) => ({
+        account_id: savedAccount.id,
+        payment_type: 'repayment',
+        due_date: payment.due_date,
+        amount: payment.amount,
+        paid_amount: 0,
+        remaining_amount: payment.amount,
+        status: 'pending',
+        note: payment.note || `دفعة سداد ${index + 1}`,
+      })),
+    ];
+
+    const { data: paymentsData, error: paymentsError } = await supabase
+      .from('financing_payments')
+      .insert(paymentsPayload)
+      .select();
+
+    if (paymentsError) {
+      console.error("Add Financing Payments Error:", paymentsError);
+      alert('تم حفظ السلفة/الجمعية لكن تعذر إنشاء الدفعات.');
+      set((state) => ({ financingAccounts: [savedAccount, ...state.financingAccounts] }));
+      return;
+    }
+
+    set((state) => ({
+      financingAccounts: [savedAccount, ...state.financingAccounts],
+      financingPayments: [...state.financingPayments, ...((paymentsData || []) as FinancingPayment[])],
+    }));
+  },
+
+  settleFinancingPayment: async (paymentId, amountToSettle, paymentMethod = 'cash') => {
+    const state = get();
+    const payment = state.financingPayments.find((p) => p.id === paymentId);
+    if (!payment || payment.status === 'paid') return;
+
+    const account = state.financingAccounts.find((a) => a.id === payment.account_id);
+    const remainingBefore = Math.max(0, Number(payment.remaining_amount ?? payment.amount) || 0);
+    const amount = Math.min(remainingBefore, Math.abs(Number(amountToSettle ?? remainingBefore) || 0));
+    if (amount <= 0) {
+      alert('اكتب مبلغ سداد صحيح.');
+      return;
+    }
+
+    const isCollection = payment.payment_type === 'collection';
+    const signedAmount = isCollection ? -amount : amount;
+    const split = {
+      paid_cash: paymentMethod === 'cash' ? signedAmount : 0,
+      paid_visa: paymentMethod === 'visa' ? signedAmount : 0,
+      paid_wallet: paymentMethod === 'wallet' ? signedAmount : 0,
+      paid_instapay: paymentMethod === 'instapay' ? signedAmount : 0,
+    };
+
+    const note = `${isCollection ? 'تحصيل' : 'سداد'} ${account?.type === 'association' ? 'جمعية' : 'سلفة'} - ${account?.lender_name || ''}${payment.note ? ` (${payment.note})` : ''}`;
+    const { data: expenseData, error: expenseError } = await supabase
+      .from('expenses')
+      .insert({
+        category: isCollection ? 'تمويل وسلف - تحصيل' : 'تمويل وسلف - سداد',
+        amount: signedAmount,
+        ...split,
+        note,
+        payment_method: paymentMethod,
+      })
+      .select()
+      .single();
+
+    if (expenseError) {
+      console.error("Settle Financing Expense Error:", expenseError);
+      alert('تعذر تسجيل حركة الخزنة.');
+      return;
+    }
+
+    const paidAt = new Date().toISOString();
+    const newPaidAmount = (Number(payment.paid_amount) || 0) + amount;
+    const newRemainingAmount = Math.max(0, remainingBefore - amount);
+    const newStatus = newRemainingAmount <= 0.009 ? 'paid' : 'pending';
+    const { data: paymentData, error: paymentError } = await supabase
+      .from('financing_payments')
+      .update({
+        status: newStatus,
+        paid_amount: newPaidAmount,
+        remaining_amount: newRemainingAmount,
+        paid_at: newStatus === 'paid' ? paidAt : payment.paid_at,
+        expense_id: (expenseData as any).id,
+      })
+      .eq('id', payment.id)
+      .select()
+      .single();
+
+    if (paymentError) {
+      console.error("Settle Financing Payment Error:", paymentError);
+      alert('تم تسجيل حركة الخزنة لكن تعذر تحديث حالة الدفعة.');
+      return;
+    }
+
+    const { data: transactionData, error: transactionError } = await supabase
+      .from('financing_transactions')
+      .insert({
+        account_id: payment.account_id,
+        payment_id: payment.id,
+        transaction_type: payment.payment_type,
+        amount,
+        remaining_after: newRemainingAmount,
+        payment_method: paymentMethod,
+        expense_id: (expenseData as any).id,
+        note,
+      })
+      .select()
+      .single();
+
+    if (transactionError) {
+      console.error("Financing Transaction Log Error:", transactionError);
+      alert('تم تسجيل الحركة، لكن تعذر حفظها في سجل معاملات السلفة/الجمعية. شغّل تحديث قاعدة البيانات.');
+    }
+
+    const newExpense: Expense = {
+      id: (expenseData as any).id,
+      category: (expenseData as any).category,
+      amount: (expenseData as any).amount,
+      paid_cash: (expenseData as any).paid_cash || 0,
+      paid_visa: (expenseData as any).paid_visa || 0,
+      paid_wallet: (expenseData as any).paid_wallet || 0,
+      paid_instapay: (expenseData as any).paid_instapay || 0,
+      note: (expenseData as any).note,
+      payment_method: (expenseData as any).payment_method,
+      date: (expenseData as any).created_at,
+    };
+
+    const updatedPayments = state.financingPayments.map((p) =>
+      p.id === payment.id ? (paymentData as FinancingPayment) : p
+    );
+    const accountPayments = updatedPayments.filter((p) => p.account_id === payment.account_id);
+    const shouldClose = accountPayments.length > 0 && accountPayments.every((p) => p.status === 'paid');
+
+    let updatedAccounts = state.financingAccounts;
+    if (shouldClose && account) {
+      await supabase.from('financing_accounts').update({ status: 'closed' }).eq('id', account.id);
+      updatedAccounts = state.financingAccounts.map((a) => a.id === account.id ? { ...a, status: 'closed' } : a);
+    }
+
+    set({
+      expenses: [newExpense, ...state.expenses],
+      financingPayments: updatedPayments,
+      financingAccounts: updatedAccounts,
+      financingTransactions: transactionData
+        ? [(transactionData as FinancingTransaction), ...state.financingTransactions]
+        : state.financingTransactions,
+    });
+
+    sendTelegramAlert({
+      type: isCollection ? 'financing_collection' : 'financing_repayment',
+      actor: getActorName(state),
+      currency: state.storeSettings.currency,
+      date: paidAt,
+      financingType: account?.type === 'association' ? 'جمعية' : 'سلفة',
+      lender: account?.lender_name,
+      phone: account?.lender_phone,
+      description: account?.description || account?.lender_details,
+      amount,
+      remaining: newRemainingAmount,
+      total: payment.amount,
+      paymentMethod,
+      dueDate: payment.due_date,
+    });
+  },
+
   // ── Suppliers ─────────────────────────────────────────────
   addSupplier: async (supplier) => {
     const { data, error } = await supabase.from('suppliers').insert(supplier).select().single();
     if (error) {
       console.error("Add Supplier Error:", error);
-      return;
+      return null;
     }
     if (data) {
       set((state) => ({ suppliers: [data as unknown as Supplier, ...state.suppliers] }));
+      return data as unknown as Supplier;
     }
+    return null;
   },
 
   updateSupplier: async (id, updated) => {
@@ -1453,10 +2053,12 @@ setupRealtime: () => {
       purchase_price: item.purchase_price
     }));
 
-    const { error: itemsError } = await supabase.from('purchase_items').insert(itemsToInsert);
-    if (itemsError) {
-      console.error("Add Purchase Items Error:", itemsError);
-      throw new Error(`خطأ في حفظ أصناف الفاتورة: ${itemsError.message}`);
+    if (itemsToInsert.length > 0) {
+      const { error: itemsError } = await supabase.from('purchase_items').insert(itemsToInsert);
+      if (itemsError) {
+        console.error("Add Purchase Items Error:", itemsError);
+        throw new Error(`خطأ في حفظ أصناف الفاتورة: ${itemsError.message}`);
+      }
     }
 
     // 3. Update stock and average price for each product
@@ -1501,6 +2103,129 @@ setupRealtime: () => {
     });
 
     new BroadcastChannel('cashier-sync').postMessage('sync_products');
+    const supplier = state.suppliers.find((s) => s.id === invoice.supplier_id);
+    sendTelegramAlert({
+      type: invoice.total === 0 ? 'supplier_payment' : 'purchase',
+      actor: getActorName(state),
+      currency: state.storeSettings.currency,
+      invoiceId: invoice.invoice_number,
+      invoiceUrl: getPublicInvoiceUrl((invData as any).id),
+      supplier: supplier?.name || 'مورد',
+      date: (invData as any).created_at,
+      total: invoice.total,
+      paid: invoice.paid_amount,
+      paymentMethod: invoice.payment_method,
+      items: items.map((item) => {
+        const product = state.products.find((p) => p.id === item.product_id);
+        return {
+          name: product?.name || item.product_id,
+          quantity: item.quantity,
+          purchase_price: item.purchase_price,
+        };
+      }),
+    });
+  },
+
+  updatePurchaseInvoice: async (invoiceId, invoice, items, splitPayments) => {
+    const state = get();
+    const oldInvoice = state.purchaseInvoices.find(inv => inv.id === invoiceId);
+    if (!oldInvoice) throw new Error('الفاتورة غير موجودة');
+
+    // 1. Revert old items impact
+    const updatedProducts = [...state.products];
+    const oldItems = oldInvoice.items || [];
+    
+    // Group differences by product_id
+    const productDeltas: Record<string, { oldQty: number; oldValue: number; newQty: number; newValue: number; newPrice?: number }> = {};
+    
+    oldItems.forEach(item => {
+      if (!productDeltas[item.product_id]) productDeltas[item.product_id] = { oldQty: 0, oldValue: 0, newQty: 0, newValue: 0 };
+      productDeltas[item.product_id].oldQty += item.quantity;
+      productDeltas[item.product_id].oldValue += (item.quantity * item.purchase_price);
+    });
+
+    items.forEach(item => {
+      if (!productDeltas[item.product_id]) productDeltas[item.product_id] = { oldQty: 0, oldValue: 0, newQty: 0, newValue: 0 };
+      productDeltas[item.product_id].newQty += item.quantity;
+      productDeltas[item.product_id].newValue += (item.quantity * item.purchase_price);
+      productDeltas[item.product_id].newPrice = item.purchase_price;
+    });
+
+    // Update stock and average price for each affected product
+    for (const [productId, delta] of Object.entries(productDeltas)) {
+      const productIndex = updatedProducts.findIndex(p => p.id === productId);
+      if (productIndex !== -1) {
+        const product = updatedProducts[productIndex];
+        const currentStock = product.stock_quantity;
+        const currentAvgPrice = product.average_purchase_price || product.purchase_price || 0;
+        const currentTotalValue = currentStock * currentAvgPrice;
+
+        const newStock = Math.max(0, currentStock - delta.oldQty + delta.newQty);
+        const adjustedTotalValue = Math.max(0, currentTotalValue - delta.oldValue + delta.newValue);
+        const newAvgPrice = newStock > 0 ? adjustedTotalValue / newStock : 0;
+        
+        const finalPurchasePrice = delta.newPrice !== undefined ? delta.newPrice : product.purchase_price;
+
+        await supabase.from('products').update({
+          stock_quantity: newStock,
+          average_purchase_price: newAvgPrice,
+          purchase_price: finalPurchasePrice
+        }).eq('id', productId);
+
+        updatedProducts[productIndex] = {
+          ...product,
+          stock_quantity: newStock,
+          average_purchase_price: newAvgPrice,
+          purchase_price: finalPurchasePrice
+        };
+      }
+    }
+
+    // 2. Update Invoice
+    const { data: invData, error: invError } = await supabase
+      .from('purchase_invoices')
+      .update({
+        total: invoice.total,
+        paid_amount: invoice.paid_amount,
+        paid_cash: splitPayments?.cash || 0,
+        paid_visa: splitPayments?.visa || 0,
+        paid_wallet: splitPayments?.wallet || 0,
+        paid_instapay: splitPayments?.instapay || 0,
+        payment_method: invoice.payment_method
+      })
+      .eq('id', invoiceId)
+      .select()
+      .single();
+
+    if (invError) throw new Error(`خطأ في تحديث الفاتورة: ${invError.message}`);
+
+    // 3. Replace Items (Delete old, Insert new)
+    await supabase.from('purchase_items').delete().eq('invoice_id', invoiceId);
+    
+    const itemsToInsert = items.map(item => ({
+      invoice_id: invoiceId,
+      product_id: item.product_id,
+      quantity: item.quantity,
+      purchase_price: item.purchase_price
+    }));
+
+    if (itemsToInsert.length > 0) {
+      const { error: itemsError } = await supabase.from('purchase_items').insert(itemsToInsert);
+      if (itemsError) throw new Error(`خطأ في حفظ أصناف الفاتورة: ${itemsError.message}`);
+    }
+
+    // 4. Update local state
+    const completeInvoice: any = {
+      ...invData,
+      items
+    };
+
+    set({
+      purchaseInvoices: state.purchaseInvoices.map(inv => inv.id === invoiceId ? completeInvoice : inv),
+      products: updatedProducts
+    });
+
+    new BroadcastChannel('cashier-sync').postMessage('sync_products');
   },
 
   paySupplierDebt: async (supplierId, amount, splitPayments) => {
@@ -1538,10 +2263,49 @@ setupRealtime: () => {
       set({
         purchaseInvoices: [newPayment, ...state.purchaseInvoices]
       });
+      const supplier = state.suppliers.find((s) => s.id === supplierId);
+      sendTelegramAlert({
+        type: 'supplier_payment',
+        actor: getActorName(state),
+        currency: state.storeSettings.currency,
+        invoiceId: invoiceNumber,
+        invoiceUrl: getPublicInvoiceUrl((data as any).id),
+        supplier: supplier?.name || 'مورد',
+        date: (data as any).created_at,
+        total: 0,
+        paid: amount,
+        paymentMethod: (data as any).payment_method,
+      });
     } catch (e) {
       console.error("Pay Supplier Debt Exception:", e);
       throw e;
     }
+  },
+
+  addCustomer: async (customer) => {
+    const { data, error } = await supabase.from('customers').insert({
+      name: customer.name,
+      phone: customer.phone,
+      custom_id: customer.custom_id,
+      card_number: customer.card_number
+    }).select().single();
+    if (error) {
+      console.error("Add Customer Error:", error);
+      return null;
+    }
+    if (data) {
+      const newCustomer: Customer = {
+        id: data.id as string,
+        name: data.name as string,
+        phone: data.phone as string,
+        custom_id: data.custom_id as string,
+        card_number: data.card_number as string,
+        timestamp: data.created_at as string,
+      };
+      set((state) => ({ customers: [newCustomer, ...state.customers] }));
+      return newCustomer;
+    }
+    return null;
   },
 
   updateCustomer: async (id, updated) => {
@@ -1557,12 +2321,14 @@ setupRealtime: () => {
 
   // ── Employees ─────────────────────────────────────────────
   loadEmployees: async () => {
-    const [empRes, transRes] = await Promise.all([
+    const [empRes, transRes, leavesRes] = await Promise.all([
       supabase.from('employees').select('*').order('created_at', { ascending: false }),
       supabase.from('employee_transactions').select('*').order('created_at', { ascending: false }),
+      supabase.from('employee_leaves').select('*').order('created_at', { ascending: false }),
     ]);
     if (empRes.data) set({ employees: empRes.data as Employee[] });
     if (transRes.data) set({ employeeTransactions: transRes.data as EmployeeTransaction[] });
+    if (leavesRes.data) set({ employeeLeaves: leavesRes.data as EmployeeLeave[] });
   },
 
   addEmployee: async (employee) => {
@@ -1591,7 +2357,8 @@ setupRealtime: () => {
     await supabase.from('employees').delete().eq('id', id);
     set((state) => ({ 
       employees: state.employees.filter((e) => e.id !== id),
-      employeeTransactions: state.employeeTransactions.filter(t => t.employee_id !== id)
+      employeeTransactions: state.employeeTransactions.filter(t => t.employee_id !== id),
+      employeeLeaves: state.employeeLeaves.filter(l => l.employee_id !== id)
     }));
   },
 
@@ -1604,7 +2371,8 @@ setupRealtime: () => {
     
     if (data) {
       const emp = get().employees.find(e => e.id === transaction.employee_id);
-      const note = `${transaction.type === 'salary' ? 'راتب' : 'سلفة'} - ${emp?.name || 'موظف'}${transaction.note ? ` (${transaction.note})` : ''}`;
+      const typeLabel = transaction.type === 'salary' ? 'راتب' : transaction.type === 'advance' ? 'سلفة' : 'حافز';
+      const note = `${typeLabel} - ${emp?.name || 'موظف'}${transaction.note ? ` (${transaction.note})` : ''}`;
       
       // Add to expenses
       await get().addExpense({
@@ -1620,5 +2388,117 @@ setupRealtime: () => {
 
       set((state) => ({ employeeTransactions: [data as EmployeeTransaction, ...state.employeeTransactions] }));
     }
+  },
+
+  updateEmployeeTransaction: async (id, transaction) => {
+    const current = get().employeeTransactions.find(t => t.id === id);
+    if (!current) return;
+
+    const { data, error } = await supabase.from('employee_transactions').update(transaction).eq('id', id).select().single();
+    if (error) {
+      console.error("Update Employee Transaction Error:", error);
+      return;
+    }
+
+    const updatedTransaction = { ...current, ...(data as EmployeeTransaction) };
+    const emp = get().employees.find(e => e.id === updatedTransaction.employee_id);
+    const typeLabel = updatedTransaction.type === 'salary' ? 'راتب' : updatedTransaction.type === 'advance' ? 'سلفة' : 'حافز';
+    const note = `${typeLabel} - ${emp?.name || 'موظف'}${updatedTransaction.note ? ` (${updatedTransaction.note})` : ''}`;
+    const currentDate = new Date(current.created_at).toISOString().slice(0, 10);
+
+    const linkedExpense = get().expenses.find(e => {
+      const expenseDate = new Date(e.date).toISOString().slice(0, 10);
+      return e.category === 'رواتب'
+        && expenseDate === currentDate
+        && Math.abs(e.amount) === Math.abs(current.amount)
+        && Math.abs(e.paid_cash || 0) === Math.abs(current.paid_cash || 0)
+        && Math.abs(e.paid_visa || 0) === Math.abs(current.paid_visa || 0)
+        && Math.abs(e.paid_wallet || 0) === Math.abs(current.paid_wallet || 0)
+        && Math.abs(e.paid_instapay || 0) === Math.abs(current.paid_instapay || 0);
+    });
+
+    if (linkedExpense) {
+      await get().updateExpense(linkedExpense.id, {
+        category: 'رواتب',
+        amount: updatedTransaction.amount,
+        paid_cash: updatedTransaction.paid_cash,
+        paid_visa: updatedTransaction.paid_visa,
+        paid_wallet: updatedTransaction.paid_wallet,
+        paid_instapay: updatedTransaction.paid_instapay,
+        note,
+        payment_method: updatedTransaction.payment_method
+      });
+    }
+
+    set((state) => ({
+      employeeTransactions: state.employeeTransactions.map(t => (t.id === id ? updatedTransaction : t))
+    }));
+  },
+
+  deleteEmployeeTransaction: async (id) => {
+    const current = get().employeeTransactions.find(t => t.id === id);
+    if (!current) return;
+
+    const { error } = await supabase.from('employee_transactions').delete().eq('id', id);
+    if (error) {
+      console.error("Delete Employee Transaction Error:", error);
+      return;
+    }
+
+    const currentDate = new Date(current.created_at).toISOString().slice(0, 10);
+    const linkedExpense = get().expenses.find(e => {
+      const expenseDate = new Date(e.date).toISOString().slice(0, 10);
+      return e.category === 'رواتب'
+        && expenseDate === currentDate
+        && Math.abs(e.amount) === Math.abs(current.amount)
+        && Math.abs(e.paid_cash || 0) === Math.abs(current.paid_cash || 0)
+        && Math.abs(e.paid_visa || 0) === Math.abs(current.paid_visa || 0)
+        && Math.abs(e.paid_wallet || 0) === Math.abs(current.paid_wallet || 0)
+        && Math.abs(e.paid_instapay || 0) === Math.abs(current.paid_instapay || 0);
+    });
+
+    if (linkedExpense) {
+      await get().deleteExpense(linkedExpense.id);
+    }
+
+    set((state) => ({
+      employeeTransactions: state.employeeTransactions.filter(t => t.id !== id)
+    }));
+  },
+
+  addEmployeeLeave: async (leave) => {
+    const { data, error } = await supabase.from('employee_leaves').insert(leave).select().single();
+    if (error) {
+      console.error("Add Employee Leave Error:", error);
+      return;
+    }
+
+    if (data) {
+      set((state) => ({ employeeLeaves: [data as EmployeeLeave, ...state.employeeLeaves] }));
+    }
+  },
+
+  updateEmployeeLeave: async (id, leave) => {
+    const { data, error } = await supabase.from('employee_leaves').update(leave).eq('id', id).select().single();
+    if (error) {
+      console.error("Update Employee Leave Error:", error);
+      return;
+    }
+
+    if (data) {
+      set((state) => ({
+        employeeLeaves: state.employeeLeaves.map(l => (l.id === id ? data as EmployeeLeave : l))
+      }));
+    }
+  },
+
+  deleteEmployeeLeave: async (id) => {
+    const { error } = await supabase.from('employee_leaves').delete().eq('id', id);
+    if (error) {
+      console.error("Delete Employee Leave Error:", error);
+      return;
+    }
+
+    set((state) => ({ employeeLeaves: state.employeeLeaves.filter(l => l.id !== id) }));
   },
 }));

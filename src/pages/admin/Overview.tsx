@@ -1,24 +1,38 @@
 import { useStore } from '../../store/useStore';
-import { Banknote, ShoppingBag, ReceiptText } from 'lucide-react';
+import { Banknote, ShoppingBag, ReceiptText, DollarSign } from 'lucide-react';
+import { calculateOrderReturnValue } from '../../utils/returns';
 
 export default function Overview() {
-  const { orders, products, storeSettings } = useStore();
+  const { orders, products, expenses, storeSettings, purchaseInvoices } = useStore();
+  const activeOrders = orders.filter((order) => !order.is_deleted);
 
   let totalNetRevenue = 0;
-  let totalNetProfit = 0;
   let validOrdersCount = 0;
 
-  orders.forEach(order => {
-    if (order.type === 'payment') return;
-    validOrdersCount++;
-    order.items.forEach(item => {
-      const qty = item.quantity - item.returned_quantity;
-      const revenue = item.sale_price * qty;
-      const cost = ((item as any).average_purchase_price ?? item.purchase_price ?? 0) * qty;
-      totalNetRevenue += revenue;
-      totalNetProfit += (revenue - cost);
-    });
+  activeOrders.forEach(order => {
+    if (order.type === 'payment') {
+      totalNetRevenue += order.paid_amount;
+    } else {
+      validOrdersCount++;
+      order.items.forEach(item => {
+        const qty = item.quantity - item.returned_quantity;
+        const revenue = item.sale_price * qty;
+        totalNetRevenue += revenue;
+      });
+    }
   });
+
+  const extraIncomes = expenses.filter(e => e.amount < 0).reduce((sum, e) => sum + Math.abs(e.amount), 0);
+  totalNetRevenue += extraIncomes;
+
+  // Calculate Net Safe Balance
+  const initialBalance = storeSettings.initial_balance || 0;
+  const ordersIn = activeOrders.reduce((sum, o) => sum + o.paid_amount, 0);
+  const returnsOut = activeOrders.reduce((sum, o) => sum + calculateOrderReturnValue(o), 0);
+  const expensesOut = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const purchasesOut = purchaseInvoices.reduce((sum, inv) => sum + inv.paid_amount, 0);
+  
+  const totalSafeBalance = initialBalance + ordersIn - returnsOut - expensesOut - purchasesOut;
 
   const lowStockProducts = products.filter((p) => p.stock_quantity < 5).length;
 
@@ -40,18 +54,18 @@ export default function Overview() {
             <Banknote size={32} />
           </div>
           <div>
-            <p className="text-slate-500 text-sm font-bold mb-1">إجمالي المبيعات</p>
+            <p className="text-slate-500 text-sm font-bold mb-1">إجمالي المبيعات والإيرادات</p>
             <h2 className="text-2xl font-black text-slate-800">{totalNetRevenue.toFixed(2)} <span className="text-sm text-slate-400">{storeSettings.currency}</span></h2>
           </div>
         </div>
 
         <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-6">
           <div className="w-16 h-16 rounded-2xl bg-emerald-50 flex items-center justify-center text-emerald-600">
-            <Banknote size={32} />
+            <DollarSign size={32} />
           </div>
           <div>
-            <p className="text-slate-500 text-sm font-bold mb-1">صافي الربح</p>
-            <h2 className="text-2xl font-black text-emerald-600">{totalNetProfit.toFixed(2)} <span className="text-sm text-slate-400">{storeSettings.currency}</span></h2>
+            <p className="text-slate-500 text-sm font-bold mb-1">صافي رصيد الخزنة</p>
+            <h2 className="text-2xl font-black text-emerald-600">{totalSafeBalance.toFixed(2)} <span className="text-sm text-slate-400">{storeSettings.currency}</span></h2>
           </div>
         </div>
 
@@ -92,10 +106,10 @@ export default function Overview() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {orders.length === 0 ? (
+            {activeOrders.length === 0 ? (
               <tr><td colSpan={4} className="p-8 text-center text-slate-400">لا توجد مبيعات حتى الآن</td></tr>
             ) : (
-              orders.slice(0, 10).map((order) => {
+              activeOrders.slice(0, 10).map((order) => {
                 const netTotal = order.items.reduce((sum, item) => sum + (item.sale_price * (item.quantity - item.returned_quantity)), 0);
                 return (
                   <tr key={order.id} className="hover:bg-slate-50 transition">

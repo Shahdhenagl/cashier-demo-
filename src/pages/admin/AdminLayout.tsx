@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Package, Settings, LogOut, FileText, Users, BookUser, BarChart3, Wallet } from 'lucide-react';
+import { LayoutDashboard, Package, Settings, LogOut, FileText, Users, BookUser, BarChart3, Wallet, Activity, MessageCircle, Landmark } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 
 export default function AdminLayout() {
@@ -12,11 +12,14 @@ export default function AdminLayout() {
     { name: 'المخزون والمنتجات', path: '/admin/inventory', icon: Package },
     { name: 'الفواتير والمرتجعات', path: '/admin/invoices', icon: FileText },
     { name: 'قاعدة العملاء', path: '/admin/customers', icon: Users },
+    { name: 'حملات واتساب', path: '/admin/whatsapp-campaigns', icon: MessageCircle },
     { name: 'الموردين والمشتريات', path: '/admin/suppliers', icon: Users },
     { name: 'حسابات الآجل', path: '/admin/deferred', icon: BookUser },
     { name: 'إدارة المحاسبين', path: '/admin/cashiers', icon: Users },
     { name: 'الموظفون والرواتب', path: '/admin/employees', icon: Users },
     { name: 'الخزينة والمصاريف', path: '/admin/finance', icon: Wallet },
+    { name: 'السلف والجمعيات', path: '/admin/financing', icon: Landmark },
+    { name: 'الميزانية', path: '/admin/budget', icon: Activity },
     { name: 'إعدادات النظام', path: '/admin/settings', icon: Settings },
   ];
 
@@ -32,21 +35,21 @@ export default function AdminLayout() {
         <div className="p-6 pb-2">
           <div className="flex items-center gap-3 bg-slate-800 p-3 rounded-2xl mb-8 border border-slate-700">
             <img src={storeSettings.logo} alt="Logo" className="w-10 h-10 rounded-xl bg-white object-cover" />
-            <div className="flex flex-col">
-              <span className="font-bold text-white text-sm truncate">{storeSettings.name}</span>
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="font-bold text-white text-sm truncate" title={storeSettings.name}>{storeSettings.name}</span>
               <span className="text-xs text-slate-400">لوحة الإدارة</span>
             </div>
           </div>
         </div>
 
-        <nav className="flex-1 px-4 space-y-2">
+        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
               style={({ isActive }) => isActive ? { background: storeSettings.themeColor } : {}}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-4 py-3 rounded-xl transition ${
+                `flex items-center gap-3 px-4 py-2.5 rounded-xl transition ${
                   isActive
                     ? 'text-white font-bold shadow-lg'
                     : 'hover:bg-slate-800 hover:text-white'

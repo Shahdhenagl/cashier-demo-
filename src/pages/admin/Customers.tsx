@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useStore } from '../../store/useStore';
-import { Search, FileText, Table as TableIcon, User, Eye, Printer, X, TrendingUp, Wallet, ArrowRightLeft, CreditCard } from 'lucide-react';
+import { Search, FileText, Table as TableIcon, User, Eye, Printer, X, TrendingUp, Wallet, ArrowRightLeft, CreditCard, Archive } from 'lucide-react';
 import { normalizeArabic } from '../../utils/textUtils';
+import { calculateOrderReturnValue } from '../../utils/returns';
 import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
@@ -9,12 +10,15 @@ import html2canvas from 'html2canvas';
 
 export default function Customers() {
   const { customers, orders, storeSettings } = useStore();
+  const activeOrders = orders.filter((order) => !order.is_deleted);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAddCustomerModalOpen, setIsAddCustomerModalOpen] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
-  const [editForm, setEditForm] = useState({ name: '', phone: '', custom_id: '' });
+  const [editForm, setEditForm] = useState({ name: '', phone: '', custom_id: '', card_number: '' });
+  const [addCustomerForm, setAddCustomerForm] = useState({ name: '', phone: '', card_number: '' });
   const [paymentForm, setPaymentForm] = useState({
     cash: '',
     visa: '',
@@ -22,7 +26,7 @@ export default function Customers() {
     instapay: '',
     note: ''
   });
-  const { updateCustomer, checkout } = useStore();
+  const { updateCustomer, addCustomer, checkout } = useStore();
 
   const filteredCustomers = customers.filter(c => 
     normalizeArabic(c.name).includes(normalizeArabic(searchQuery)) || 
@@ -34,17 +38,18 @@ export default function Customers() {
 
   const getCustomerMetrics = (customerId: string) => {
     const customerOrders = orders.filter(o => o.customer?.id === customerId);
+    const activeCustomerOrders = activeOrders.filter(o => o.customer?.id === customerId);
     
-    const totalReturns = customerOrders.reduce((sum, o) => {
-      return sum + o.items.reduce((iSum, item) => iSum + (item.returned_quantity * item.sale_price), 0);
+    const totalReturns = activeCustomerOrders.reduce((sum, o) => {
+      return sum + calculateOrderReturnValue(o);
     }, 0);
 
-    const totalSpent = customerOrders.reduce((sum, o) => {
+    const totalSpent = activeCustomerOrders.reduce((sum, o) => {
       if (o.type === 'payment') return sum;
       return sum + o.total;
     }, 0);
 
-    const totalProfit = customerOrders.reduce((sum, o) => {
+    const totalProfit = activeCustomerOrders.reduce((sum, o) => {
       if (o.type === 'payment') return sum;
       return sum + o.items.reduce((itemSum, item) => {
         const netQty = item.quantity - item.returned_quantity;
@@ -53,12 +58,12 @@ export default function Customers() {
     }, 0);
 
     // Debt = Original Total - Paid Amount (Returns are cash payout, don't affect debt)
-    const totalDebt = Math.max(0, customerOrders.reduce((sum, o) => {
+    const totalDebt = Math.max(0, activeCustomerOrders.reduce((sum, o) => {
       const effectiveTotal = o.type === 'payment' ? 0 : o.total;
       return sum + (effectiveTotal - o.paid_amount);
     }, 0));
 
-    return { customerOrders, totalSpent, totalProfit, totalDebt, totalReturns };
+    return { customerOrders, activeCustomerOrders, totalSpent, totalProfit, totalDebt, totalReturns };
   };
 
   const exportExcel = () => {
@@ -72,7 +77,7 @@ export default function Customers() {
         return [
           c.name,
           c.phone,
-          metrics.customerOrders.length,
+          metrics.activeCustomerOrders.length,
           metrics.totalSpent,
           metrics.totalReturns,
           metrics.totalDebt,
@@ -114,9 +119,39 @@ export default function Customers() {
   const handleOpenProfile = (customer: any) => {
     const metrics = getCustomerMetrics(customer.id);
     setSelectedCustomer({ ...customer, ...metrics });
-    setEditForm({ name: customer.name, phone: customer.phone, custom_id: customer.custom_id || '' });
+    setEditForm({ 
+      name: customer.name, 
+      phone: customer.phone, 
+      custom_id: customer.custom_id || '',
+      card_number: customer.card_number || ''
+    });
     setIsEditMode(false);
     setIsModalOpen(true);
+  };
+
+  const handleAddCustomer = async () => {
+    if (!addCustomerForm.name.trim() || !addCustomerForm.phone.trim()) {
+      alert("يرجى ملء الاسم ورقم الهاتف");
+      return;
+    }
+
+    try {
+      const result = await addCustomer({
+        name: addCustomerForm.name,
+        phone: addCustomerForm.phone,
+        card_number: addCustomerForm.card_number || undefined,
+      });
+
+      if (result) {
+        alert("تم إضافة العميل بنجاح");
+        setAddCustomerForm({ name: '', phone: '', card_number: '' });
+        setIsAddCustomerModalOpen(false);
+      } else {
+        alert("فشل في إضافة العميل. تحقق من البيانات");
+      }
+    } catch (e: any) {
+      alert("خطأ: " + (e.message || "فشل في إضافة العميل"));
+    }
   };
 
   const handleUpdateCustomer = async () => {
@@ -137,7 +172,7 @@ export default function Customers() {
     const insta = parseFloat(paymentForm.instapay) || 0;
     const totalPaid = cash + visa + wallet + insta;
 
-    if (totalPaid <= 0) return alert("يرجى إدخال مبلغ السداد");
+    if (totalPaid <= 0) return alert("يرجى إدخال مبلغ التحصيل");
 
     try {
       await checkout(
@@ -149,7 +184,7 @@ export default function Customers() {
         { cash, visa, wallet, instapay: insta }
       );
       
-      alert("تم تسجيل السداد بنجاح");
+      alert("تم تسجيل التحصيل بنجاح");
       setIsPaymentModalOpen(false);
       setPaymentForm({ cash: '', visa: '', wallet: '', instapay: '', note: '' });
       
@@ -157,7 +192,7 @@ export default function Customers() {
       const metrics = getCustomerMetrics(selectedCustomer.id);
       setSelectedCustomer({ ...selectedCustomer, ...metrics });
     } catch (e: any) {
-      alert("خطأ في تسجيل السداد: " + e.message);
+      alert("خطأ في تسجيل التحصيل: " + e.message);
     }
   };
 
@@ -168,7 +203,7 @@ export default function Customers() {
     let itemsHtml = '';
     if (isPayment) {
       itemsHtml = `<tr>
-        <td colspan="2" style="padding:12px 4px;border-bottom:1px dashed #ddd;font-size:14px;font-weight:bold;">سداد مديونية سابقة</td>
+        <td colspan="2" style="padding:12px 4px;border-bottom:1px dashed #ddd;font-size:14px;font-weight:bold;">تحصيل مديونية سابقة</td>
         <td style="padding:12px 4px;border-bottom:1px dashed #ddd;text-align:left;font-size:14px;font-weight:bold;">${order.paid_amount.toFixed(2)}</td>
       </tr>`;
     } else {
@@ -242,6 +277,12 @@ export default function Customers() {
         </div>
         <div className="flex gap-3">
           <button 
+            onClick={() => setIsAddCustomerModalOpen(true)}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg hover:shadow-indigo-200"
+          >
+            <User size={18} /> إضافة عميل جديد
+          </button>
+          <button 
             onClick={exportExcel}
             className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg hover:shadow-emerald-200"
           >
@@ -301,7 +342,7 @@ export default function Customers() {
                 </tr>
               ) : (
                 filteredCustomers.map((customer) => {
-                  const { customerOrders, totalSpent, totalDebt, totalReturns } = getCustomerMetrics(customer.id);
+                  const { activeCustomerOrders, totalSpent, totalDebt, totalReturns } = getCustomerMetrics(customer.id);
                   return (
                     <tr key={customer.id} className="hover:bg-slate-50/50 transition">
                       <td className="p-5">
@@ -321,7 +362,7 @@ export default function Customers() {
                       <td className="p-5 font-mono font-bold text-slate-500" dir="ltr">{customer.phone}</td>
                       <td className="p-5 text-center">
                         <span style={{ backgroundColor: storeSettings.themeColor + '15', color: storeSettings.themeColor }} className="px-3 py-1.5 rounded-lg font-bold">
-                          {customerOrders.length} طلب
+                          {activeCustomerOrders.length} طلب
                         </span>
                       </td>
                       <td className="p-5 text-center font-black text-slate-900">
@@ -389,11 +430,18 @@ export default function Customers() {
                       <div className="flex gap-4">
                          <input 
                           className="bg-slate-100 px-2 py-1 rounded-lg text-slate-600 font-bold focus:outline-none text-sm"
+                          placeholder="رقم الهاتف"
                           value={editForm.phone}
                           onChange={e => setEditForm({ ...editForm, phone: e.target.value })}
                         />
                         <input 
-                          placeholder="رقم الكارت ID"
+                          placeholder="رقم الكارت"
+                          className="bg-slate-100 px-2 py-1 rounded-lg text-slate-600 font-mono font-bold border border-slate-200 focus:outline-none text-sm"
+                          value={editForm.card_number}
+                          onChange={e => setEditForm({ ...editForm, card_number: e.target.value })}
+                        />
+                        <input 
+                          placeholder="رقم العميل ID"
                           className="bg-indigo-50 px-2 py-1 rounded-lg text-indigo-600 font-mono font-black border border-indigo-200 focus:outline-none text-sm"
                           value={editForm.custom_id}
                           onChange={e => setEditForm({ ...editForm, custom_id: e.target.value })}
@@ -407,6 +455,12 @@ export default function Customers() {
                       <div className="flex items-center gap-3 text-slate-500 font-bold text-xs flex-wrap">
                         <span className="flex items-center gap-1"><CreditCard size={12} /> {selectedCustomer.phone}</span>
                         <span className="w-1 h-1 rounded-full bg-slate-300" />
+                        {selectedCustomer.card_number && (
+                          <>
+                            <span className="bg-purple-50 px-2 py-0.5 rounded-lg text-purple-600 font-mono font-black border border-purple-100 text-[10px]">Card: {selectedCustomer.card_number}</span>
+                            <span className="w-1 h-1 rounded-full bg-slate-300" />
+                          </>
+                        )}
                         <span className="bg-indigo-50 px-2 py-0.5 rounded-lg text-indigo-600 font-mono font-black border border-indigo-100 text-[10px]">ID: {selectedCustomer.custom_id || selectedCustomer.id.substring(0, 8)}</span>
                         <span className="w-1 h-1 rounded-full bg-slate-300" />
                         <span className="text-[10px] whitespace-nowrap">سجل منذ: {new Date(selectedCustomer.timestamp).toLocaleDateString('ar-SA')}</span>
@@ -502,7 +556,7 @@ export default function Customers() {
                       onClick={() => setIsPaymentModalOpen(true)}
                       className="mr-auto bg-red-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-lg shadow-red-100 hover:bg-red-700 transition"
                     >
-                      سداد مبلغ
+                      تحصيل آجل
                     </button>
                   )}
                 </div>
@@ -514,7 +568,7 @@ export default function Customers() {
                   <div className="flex justify-between items-center mb-6">
                     <h4 className="text-xl font-black text-slate-800 flex items-center gap-2">
                       <Wallet className="text-indigo-600" size={24} />
-                      تسجيل سداد مديونية
+                      تحصيل آجل
                     </h4>
                     <button onClick={() => setIsPaymentModalOpen(false)} className="text-slate-400 hover:text-slate-600">
                       <X size={20} />
@@ -571,7 +625,7 @@ export default function Customers() {
                       onClick={handlePayDebt}
                       className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black shadow-lg hover:bg-indigo-700 transition flex items-center gap-2"
                     >
-                      تأكيد السداد
+                      تأكيد التحصيل
                     </button>
                   </div>
                 </div>
@@ -600,10 +654,10 @@ export default function Customers() {
                       <tr><td colSpan={7} className="p-10 text-center text-slate-400 font-bold">لا يوجد فواتير سابقة لهذا العميل</td></tr>
                     ) : (
                       selectedCustomer.customerOrders.map((order: any) => {
-                        const returnedValue = order.items.reduce((sum: number, i: any) => sum + (i.returned_quantity * i.sale_price), 0);
-                        const netTotal = order.total - returnedValue;
+                        const returnedValue = order.is_deleted ? 0 : calculateOrderReturnValue(order);
+                        const netTotal = order.is_deleted ? 0 : order.total - returnedValue;
                         // Debt is based on the original invoice total vs paid — returns are cash refunds, NOT debt reductions
-                        const rowDebt = order.total - order.paid_amount;
+                        const rowDebt = order.is_deleted ? 0 : order.total - order.paid_amount;
                         const isDebt = rowDebt > 0;
                         const isPayment = order.type === 'payment';
                         
@@ -612,8 +666,12 @@ export default function Customers() {
                             <td className="p-4 font-mono font-bold text-slate-800">#{order.id}</td>
                             <td className="p-4 text-xs font-medium">{new Date(order.date).toLocaleDateString('ar-SA')}</td>
                             <td className="p-4">
-                              {isPayment ? (
-                                <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded text-[10px] font-bold">سداد آجل</span>
+                              {order.is_deleted ? (
+                                <span className="bg-red-100 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold inline-flex items-center gap-1">
+                                  <Archive size={12} /> فاتورة محذوفة
+                                </span>
+                              ) : isPayment ? (
+                                <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded text-[10px] font-bold">تحصيل آجل</span>
                               ) : (
                                 <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded text-[10px] font-bold">فاتورة بيع</span>
                               )}
@@ -621,7 +679,9 @@ export default function Customers() {
                             <td className="p-4 text-center font-bold text-slate-900">{netTotal.toLocaleString()}</td>
                             <td className="p-4 text-center font-bold text-emerald-600">{order.paid_amount.toLocaleString()}</td>
                             <td className="p-4 text-center">
-                              {isPayment ? (
+                              {order.is_deleted ? (
+                                <span className="text-red-500 text-[10px] font-bold">محذوفة</span>
+                              ) : isPayment ? (
                                 <span className="text-indigo-500 text-[10px] font-bold">مكتمل</span>
                               ) : isDebt ? (
                                 <span className="text-red-500 text-[10px] font-bold">
@@ -650,6 +710,94 @@ export default function Customers() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Customer Modal */}
+      {isAddCustomerModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-md animate-in fade-in zoom-in-95 duration-300">
+            {/* Modal Header */}
+            <div className="p-8 border-b border-slate-100 flex justify-between items-center relative overflow-hidden">
+              <div 
+                className="absolute top-0 right-0 w-24 h-24 opacity-5 pointer-events-none"
+                style={{ backgroundColor: storeSettings.themeColor, borderRadius: '0 0 0 100%' }}
+              />
+              <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
+                <div 
+                  style={{ backgroundColor: storeSettings.themeColor + '20' }}
+                  className="w-10 h-10 rounded-xl flex items-center justify-center"
+                >
+                  <User size={20} style={{ color: storeSettings.themeColor }} />
+                </div>
+                إضافة عميل جديد
+              </h2>
+              <button 
+                onClick={() => setIsAddCustomerModalOpen(false)}
+                className="bg-slate-100 text-slate-400 hover:text-slate-600 p-2 rounded-xl transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-8 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">اسم العميل *</label>
+                <input 
+                  type="text"
+                  placeholder="أدخل اسم العميل"
+                  value={addCustomerForm.name}
+                  onChange={(e) => setAddCustomerForm({ ...addCustomerForm, name: e.target.value })}
+                  className="w-full border border-slate-200 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 transition-all"
+                  style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">رقم الهاتف *</label>
+                <input 
+                  type="tel"
+                  placeholder="أدخل رقم الهاتف"
+                  value={addCustomerForm.phone}
+                  onChange={(e) => setAddCustomerForm({ ...addCustomerForm, phone: e.target.value })}
+                  className="w-full border border-slate-200 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 transition-all font-mono"
+                  style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                  dir="ltr"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">رقم الكارت</label>
+                <input 
+                  type="text"
+                  placeholder="أدخل رقم الكارت (اختياري)"
+                  value={addCustomerForm.card_number}
+                  onChange={(e) => setAddCustomerForm({ ...addCustomerForm, card_number: e.target.value })}
+                  className="w-full border border-slate-200 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 transition-all font-mono"
+                  style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                  dir="ltr"
+                />
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-8 border-t border-slate-100 flex gap-3 justify-end">
+              <button 
+                onClick={() => setIsAddCustomerModalOpen(false)}
+                className="px-6 py-2.5 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition"
+              >
+                إلغاء
+              </button>
+              <button 
+                onClick={handleAddCustomer}
+                style={{ backgroundColor: storeSettings.themeColor, boxShadow: `0 8px 16px ${storeSettings.themeColor}30` }}
+                className="px-6 py-2.5 rounded-xl font-bold text-white hover:opacity-90 transition flex items-center gap-2"
+              >
+                <User size={16} /> إضافة العميل
+              </button>
             </div>
           </div>
         </div>

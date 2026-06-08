@@ -1,19 +1,28 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store/useStore';
-import { ArrowRightLeft, Search, User, Printer, CreditCard, FileText, Table as TableIcon } from 'lucide-react';
+import { ArrowRightLeft, Search, User, Printer, CreditCard, FileText, Table as TableIcon, TrendingUp, Calendar, X, Trash2, Archive } from 'lucide-react';
 import { normalizeArabic } from '../../utils/textUtils';
+import { calculateInvoiceProfit } from '../../utils/invoiceProfit';
+import { calculateOrderReturnValue } from '../../utils/returns';
 import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 export default function Invoices() {
-  const { orders, storeSettings } = useStore();
+  const { orders, storeSettings, deleteOrder } = useStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [showReturnsOnly, setShowReturnsOnly] = useState(false);
+  const [viewMode, setViewMode] = useState<'active' | 'deleted'>('active');
+  const [selectedDay, setSelectedDay] = useState<string>('');
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState<string>(new Date().getFullYear().toString());
+  const [selectedCashier, setSelectedCashier] = useState<string>('all');
   const [loading, setLoading] = useState(false);
+
+  const activeOrders = useMemo(() => orders.filter((order) => !order.is_deleted), [orders]);
+  const deletedOrders = useMemo(() => orders.filter((order) => order.is_deleted), [orders]);
+  const visibleOrders = viewMode === 'deleted' ? deletedOrders : activeOrders;
 
   const handlePrint = (order: any) => {
     const printDate = new Date(order.created_at || Date.now()).toLocaleString('ar-EG', { calendar: 'gregory', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -25,15 +34,13 @@ export default function Invoices() {
     // Calculate debt as of this transaction
     let debtAfter = 0;
     let debtBefore = 0;
-    if (order.customer) {
-      const customerOrders = orders.filter(o => o.customer?.id === order.customer.id);
+    if (order.customer && !order.is_deleted) {
+      const customerOrders = activeOrders.filter(o => o.customer?.id === order.customer.id);
       const sortedOrders = [...customerOrders].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
       const currentIndex = sortedOrders.findIndex(o => o.id === order.id);
       
       const calcDebt = (upToIndex: number) => sortedOrders.slice(0, upToIndex).reduce((sum, o) => {
-        const itemsSum = o.items.reduce((s, i) => s + (i.quantity * i.sale_price), 0);
-        const discountRatio = itemsSum > 0 ? o.total / itemsSum : 1;
-        const returnedValue = o.items.reduce((s, i) => s + (i.returned_quantity * i.sale_price), 0) * discountRatio;
+        const returnedValue = calculateOrderReturnValue(o);
         const effectiveTotal = o.type === 'payment' ? 0 : (o.total - returnedValue);
         return sum + (effectiveTotal - o.paid_amount);
       }, 0);
@@ -214,9 +221,32 @@ export default function Invoices() {
   // Extract unique years from orders
   const years = useMemo(() => {
     const y = new Set<string>();
-    orders.forEach(o => y.add(new Date(o.date).getFullYear().toString()));
+    visibleOrders.forEach(o => y.add(new Date(o.date).getFullYear().toString()));
     return Array.from(y).sort((a, b) => parseInt(b) - parseInt(a));
-  }, [orders]);
+  }, [visibleOrders]);
+
+  // Extract unique cashiers from orders
+  const uniqueCashiers = useMemo(() => {
+    const c = new Set<string>();
+    visibleOrders.forEach(o => {
+      if (o.cashier_name) c.add(o.cashier_name);
+    });
+    return Array.from(c).sort();
+  }, [visibleOrders]);
+
+  const handleDeleteOrder = async (order: any) => {
+    const message = [
+      `هل أنت متأكد من حذف الفاتورة #${order.id}؟`,
+      '',
+      'مسح الفاتورة سيحذف تأثيرها من الإيراد والربح والمديونية، ويرجع المنتجات غير المرتجعة إلى المخزون.',
+      'ستظل الفاتورة ظاهرة في بروفايل العميل كفاتورة محذوفة، وستظهر في سلة المهملات للعرض فقط بدون استرجاع.',
+    ].join('\n');
+
+    if (!confirm(message)) return;
+
+    const ok = await deleteOrder(order.id, 'حذف يدوي بسبب فاتورة خاطئة');
+    alert(ok ? 'تم حذف الفاتورة ونقلها إلى سلة المهملات.' : 'تعذر حذف الفاتورة. تأكد من تشغيل تحديث قاعدة البيانات ثم حاول مرة أخرى.');
+  };
 
   const exportExcel = () => {
     const wsData = [
@@ -298,8 +328,14 @@ export default function Invoices() {
   };
 
   const filteredOrders = useMemo(() => {
-    return orders.filter(o => {
+    return visibleOrders.filter(o => {
       const orderDate = new Date(o.date);
+      const orderDay = [
+        orderDate.getFullYear(),
+        String(orderDate.getMonth() + 1).padStart(2, '0'),
+        String(orderDate.getDate()).padStart(2, '0')
+      ].join('-');
+      const matchesDay = !selectedDay || orderDay === selectedDay;
       const matchesMonth = selectedMonth === 'all' || (orderDate.getMonth() + 1).toString() === selectedMonth;
       const matchesYear = selectedYear === 'all' || orderDate.getFullYear().toString() === selectedYear;
       const matchesReturns = showReturnsOnly ? o.items.some(i => i.returned_quantity > 0) : true;
@@ -310,10 +346,19 @@ export default function Invoices() {
         normalizeArabic(o.customer?.name || '').includes(normalizeArabic(searchStr)) ||
         (o.customer?.phone || '').includes(searchStr);
 
+      const matchesCashier = selectedCashier === 'all' || o.cashier_name === selectedCashier;
 
-      return matchesMonth && matchesYear && matchesReturns && matchesSearch;
+      return matchesDay && matchesMonth && matchesYear && matchesReturns && matchesSearch && matchesCashier;
     });
-  }, [orders, searchQuery, showReturnsOnly, selectedMonth, selectedYear]);
+  }, [visibleOrders, searchQuery, showReturnsOnly, selectedDay, selectedMonth, selectedYear, selectedCashier]);
+
+  const totalInvoiceProfit = useMemo(() => {
+    return filteredOrders.reduce((sum, order) => sum + calculateInvoiceProfit(order), 0);
+  }, [filteredOrders]);
+
+  const returnedInvoicesCount = useMemo(() => {
+    return filteredOrders.filter(order => order.items.some(item => item.returned_quantity > 0)).length;
+  }, [filteredOrders]);
 
   return (
     <div className="p-8">
@@ -341,8 +386,8 @@ export default function Invoices() {
 
       <div id="invoices-table" className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden flex flex-col min-h-[500px]">
         {/* Advanced Filters */}
-        <div className="p-5 border-b border-slate-100 bg-slate-50 grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-          <div className="relative md:col-span-2">
+        <div className="p-5 border-b border-slate-100 bg-slate-50 grid grid-cols-1 xl:grid-cols-5 gap-4 items-center">
+          <div className="relative xl:col-span-2">
             <Search className="absolute right-4 top-3 text-slate-400" size={20} />
             <input
               type="text"
@@ -354,7 +399,26 @@ export default function Invoices() {
             />
           </div>
           
-          <div className="flex gap-4 md:col-span-2 justify-end items-center">
+          <div className="flex flex-wrap gap-3 xl:col-span-3 justify-end items-center">
+            <div className="relative">
+              <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                type="date"
+                value={selectedDay}
+                onChange={e => setSelectedDay(e.target.value)}
+                style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+                className="bg-white border border-slate-200 rounded-xl py-2.5 pr-10 pl-10 text-sm focus:ring-2 outline-none min-w-[155px]"
+              />
+              {selectedDay && (
+                <button
+                  onClick={() => setSelectedDay('')}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition"
+                  title="كل الأيام"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
             <select 
               value={selectedMonth} 
               onChange={e => setSelectedMonth(e.target.value)} 
@@ -376,24 +440,78 @@ export default function Invoices() {
               <option value="all">كل السنوات</option>
               {years.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
+
+            <select 
+              value={selectedCashier} 
+              onChange={e => setSelectedCashier(e.target.value)} 
+              style={{ '--tw-ring-color': storeSettings.themeColor + '40' } as any}
+              className="bg-white border border-slate-200 rounded-xl p-2.5 text-sm focus:ring-2 outline-none"
+            >
+              <option value="all">كل المحاسبين</option>
+              {uniqueCashiers.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </div>
         </div>
 
-        <div className="p-4 border-b border-slate-100 bg-white flex justify-between items-center">
-           <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-700 bg-slate-50 px-4 py-2 border border-slate-200 rounded-xl hover:bg-slate-100 transition">
-              <input 
-                type="checkbox" 
-                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
-                checked={showReturnsOnly}
-                onChange={(e) => setShowReturnsOnly(e.target.checked)}
-              />
-              إظهار الفواتير المرتجعة فقط
-            </label>
-            <div 
-              style={{ backgroundColor: storeSettings.themeColor + '15', color: storeSettings.themeColor, borderColor: storeSettings.themeColor + '30' }}
-              className="text-sm font-bold px-5 py-2.5 border rounded-xl"
-            >
-              إجمالي النتائج: {filteredOrders.length}
+        <div className="p-5 border-b border-slate-100 bg-white">
+            <div className="mb-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setViewMode('active')}
+                className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-black transition ${
+                  viewMode === 'active'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                <FileText size={16} /> الفواتير الحالية
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('deleted')}
+                className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-black transition ${
+                  viewMode === 'deleted'
+                    ? 'bg-red-600 text-white shadow-sm'
+                    : 'bg-red-50 text-red-600 hover:bg-red-100'
+                }`}
+              >
+                <Archive size={16} /> سلة المهملات ({deletedOrders.length})
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div
+                style={{ backgroundColor: storeSettings.themeColor + '10', borderColor: storeSettings.themeColor + '25' }}
+                className="rounded-2xl border p-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-black text-slate-500">إجمالي النتائج</p>
+                  <FileText size={18} style={{ color: storeSettings.themeColor }} />
+                </div>
+                <p className="text-2xl font-black mt-2" style={{ color: storeSettings.themeColor }}>{filteredOrders.length}</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-emerald-700">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-black text-emerald-600">إجمالي الربح من الفواتير</p>
+                  <TrendingUp size={18} />
+                </div>
+                <p className="text-2xl font-black mt-2">{totalInvoiceProfit.toFixed(2)} <span className="text-xs">{storeSettings.currency}</span></p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReturnsOnly((current) => !current)}
+                className={`rounded-2xl border p-4 text-right transition-all ${
+                  showReturnsOnly
+                    ? 'border-orange-300 bg-orange-100 text-orange-800 shadow-sm ring-2 ring-orange-200'
+                    : 'border-orange-100 bg-orange-50 text-orange-700 hover:border-orange-200 hover:bg-orange-100/60'
+                }`}
+                title={showReturnsOnly ? 'عرض كل الفواتير' : 'إظهار الفواتير التي بها مرتجعات فقط'}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-black text-orange-600">فواتير بها مرتجعات</p>
+                  <ArrowRightLeft size={18} />
+                </div>
+                <p className="text-2xl font-black mt-2">{returnedInvoicesCount}</p>
+              </button>
             </div>
         </div>
 
@@ -407,6 +525,7 @@ export default function Invoices() {
                 <th className="p-4 text-center">المسؤول</th>
                 <th className="p-4">تفاصيل المنتجات</th>
                 <th className="p-4 text-center border-x border-slate-100 bg-slate-100/50">الإجمالي</th>
+                <th className="p-4 text-center text-emerald-600 bg-emerald-50/50">الربح</th>
                 <th className="p-4 text-center text-orange-600">قيمة المرتجع</th>
                 <th className="p-4 text-center text-green-600">المدفوع</th>
                 <th className="p-4 text-center text-red-500 font-black">الباقي عليه</th>
@@ -417,18 +536,21 @@ export default function Invoices() {
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {filteredOrders.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="p-12 text-center text-slate-400 text-lg font-bold">
+                  <td colSpan={12} className="p-12 text-center text-slate-400 text-lg font-bold">
                     لا يوجد فواتير تطابق بحثك حالياً.
                   </td>
                 </tr>
               ) : (
                 filteredOrders.map((order) => {
                   const hasReturns = order.items.some(i => i.returned_quantity > 0);
-                  const returnedValue = order.items.reduce((sum, i) => sum + (i.returned_quantity * i.sale_price), 0);
+                  const returnedValue = calculateOrderReturnValue(order);
                   const effectiveDebt = order.type === 'payment' ? 0 : Math.max(0, order.total - order.paid_amount);
 
+                  // Calculate Profit
+                  const profit = calculateInvoiceProfit(order);
+
                   return (
-                    <tr key={order.id} className={`hover:bg-slate-50 transition ${hasReturns ? 'bg-red-50/20' : ''}`}>
+                    <tr key={order.id} className={`hover:bg-slate-50 transition ${order.is_deleted ? 'bg-red-50/40 opacity-80' : hasReturns ? 'bg-red-50/20' : ''}`}>
                       <td className="p-4 font-mono font-bold" style={{ color: storeSettings.themeColor }}>{order.id}</td>
                       <td className="p-4">
                         {order.customer ? (
@@ -436,7 +558,7 @@ export default function Invoices() {
                             <span className="font-bold flex items-center gap-1"><User size={14} style={{ color: storeSettings.themeColor }} /> {order.customer.name}</span>
                             <span className="text-xs text-slate-500 font-mono mt-1" dir="ltr">{order.customer.phone}</span>
                             {(() => {
-                              const cDebt = orders.filter(o => o.customer?.id === order.customer!.id)
+                              const cDebt = activeOrders.filter(o => o.customer?.id === order.customer!.id)
                                 .reduce((sum, o) => {
                                   const eTotal = o.type === 'payment' ? 0 : o.total;
                                   return sum + (eTotal - o.paid_amount);
@@ -453,7 +575,11 @@ export default function Invoices() {
                       <td className="p-4 text-slate-500">{new Date(order.date).toLocaleString('ar-SA')}</td>
                       <td className="p-4 text-center font-bold text-indigo-600">{order.cashier_name || 'غير معروف'}</td>
                       <td className="p-4 text-right">
-                        {order.type === 'payment' ? (
+                        {order.is_deleted ? (
+                          <span className="inline-flex items-center gap-1 bg-red-100 text-red-600 px-3 py-1 rounded-lg text-xs font-bold">
+                            <Archive size={14} /> فاتورة محذوفة
+                          </span>
+                        ) : order.type === 'payment' ? (
                           <div className="flex items-center gap-2 text-indigo-600 font-bold">
                             <CreditCard size={14} /> سداد مديونية آجل
                           </div>
@@ -471,8 +597,13 @@ export default function Invoices() {
                        <td className="p-4 text-center font-black border-x border-slate-100 bg-slate-50/50" style={order.type === 'payment' ? { color: storeSettings.themeColor } : {}}>
                         {order.type === 'payment' ? `+ ${order.paid_amount.toFixed(2)}` : order.total.toFixed(2)} {storeSettings.currency}
                       </td>
+                      <td className={`p-4 text-center font-black ${
+                        profit >= 0 ? 'text-emerald-600 bg-emerald-50/30' : 'text-red-600 bg-red-50/30'
+                      }`}>
+                        {order.type === 'payment' ? '—' : profit.toFixed(2)}
+                      </td>
                       <td className="p-4 text-center font-bold text-orange-600">
-                        {returnedValue.toFixed(2)} {storeSettings.currency}
+                        {returnedValue > 0 ? returnedValue.toFixed(2) : '-'}
                       </td>
                       <td className="p-4 text-center font-black text-green-600">
                         {order.paid_amount.toFixed(2)} {storeSettings.currency}
@@ -500,14 +631,25 @@ export default function Invoices() {
                         )}
                       </td>
                       <td className="p-4 text-center">
-                        <button 
-                          onClick={() => handlePrint(order)}
-                          style={{ backgroundColor: storeSettings.themeColor + '10', color: storeSettings.themeColor }}
-                          className="p-2 rounded-lg hover:bg-opacity-20 transition-all shadow-sm border border-transparent hover:border-current"
-                          title="طباعة الفاتورة"
-                        >
-                          <Printer size={18} />
-                        </button>
+                        <div className="flex items-center justify-center gap-2">
+                          <button 
+                            onClick={() => handlePrint(order)}
+                            style={{ backgroundColor: storeSettings.themeColor + '10', color: storeSettings.themeColor }}
+                            className="p-2 rounded-lg hover:bg-opacity-20 transition-all shadow-sm border border-transparent hover:border-current"
+                            title="طباعة الفاتورة"
+                          >
+                            <Printer size={18} />
+                          </button>
+                          {!order.is_deleted && (
+                            <button
+                              onClick={() => handleDeleteOrder(order)}
+                              className="p-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-all shadow-sm border border-red-100"
+                              title="حذف الفاتورة"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

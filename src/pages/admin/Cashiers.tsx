@@ -189,18 +189,18 @@ export default function Cashiers() {
 
       {/* Add/Edit Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-slate-800 rounded-[40px] shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-8 border-b border-slate-50 dark:border-slate-700 flex justify-between items-center">
-               <h2 className="text-2xl font-black text-slate-800 dark:text-white">
-                 {editingCashier ? 'تعديل بيانات المحاسب' : 'إضافة محاسب جديد'}
-               </h2>
-               <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition">
-                 <X size={24} />
-               </button>
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-[40px] shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+            <div className="p-8 text-white flex justify-between items-center shrink-0" style={{ backgroundColor: storeSettings.themeColor }}>
+              <div>
+                <h2 className="text-2xl font-black">{editingCashier ? 'تعديل بيانات كاشير' : 'إضافة كاشير جديد'}</h2>
+                <p className="text-white/70 text-sm mt-1">أدخل بيانات الدخول للكاشير</p>
+              </div>
+              <button onClick={() => setIsModalOpen(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition text-white">
+                <X size={24} />
+              </button>
             </div>
-
-            <form onSubmit={handleSubmit} className="p-8 space-y-6">
+            <form onSubmit={handleSubmit} className="p-8 space-y-6 overflow-y-auto">
                <div className="space-y-4">
                   {/* Photo Upload Section */}
                   <div className="flex flex-col items-center gap-4 mb-6">

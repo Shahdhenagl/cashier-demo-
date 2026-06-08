@@ -5,22 +5,33 @@ import {
   Calendar, Edit3, X, Download, TrendingUp, CreditCard, Smartphone, Zap, 
   ArrowRightLeft, Landmark, FileText, Printer
 } from 'lucide-react';
+import { calculateInvoiceProfit } from '../../utils/invoiceProfit';
+import { calculateOrderReturnValue } from '../../utils/returns';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { allocatePayment } from '../../utils/paymentAllocator';
 
 export default function Finance() {
   const { 
     expenses, orders, storeSettings, addExpense, updateExpense, 
     deleteExpense, purchaseInvoices 
   } = useStore();
+  const activeOrders = useMemo(() => orders.filter((order) => !order.is_deleted), [orders]);
   
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [filterType, setFilterType] = useState<'daily' | 'monthly' | 'yearly'>('daily');
+  const selectedDateDisplay = useMemo(() => {
+    const [year, month, day] = selectedDate.split('-');
+    if (filterType === 'yearly') return year;
+    if (filterType === 'monthly') return `${month}/${year}`;
+    return `${day}/${month}/${year}`;
+  }, [filterType, selectedDate]);
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [formData, setFormData] = useState({ 
+    transaction_type: 'expense',
     category: 'عام', 
     amount: '', 
     paid_cash: '', 
@@ -51,13 +62,13 @@ export default function Finance() {
       startOfPeriod.setHours(0,0,0,0);
     }
     
-    const ordersIn = orders
+    const ordersIn = activeOrders
       .filter(o => new Date(o.date) < startOfPeriod)
       .reduce((sum, o) => sum + o.paid_amount, 0);
     
-    const returnsOut = orders
+    const returnsOut = activeOrders
       .filter(o => new Date(o.date) < selDate)
-      .reduce((sum, o) => sum + o.items.reduce((iSum, item) => iSum + (item.returned_quantity * item.sale_price), 0), 0);
+      .reduce((sum, o) => sum + calculateOrderReturnValue(o), 0);
 
     const expensesOut = expenses
       .filter(e => new Date(e.date) < selDate)
@@ -68,7 +79,7 @@ export default function Finance() {
       .reduce((sum, inv) => sum + inv.paid_amount, 0);
 
     return (ordersIn - returnsOut - expensesOut - purchasesOut);
-  }, [orders, expenses, purchaseInvoices, selectedDate]);
+  }, [activeOrders, expenses, purchaseInvoices, selectedDate, filterType]);
 
   const openingBalance = initialBalance + totalsBefore;
 
@@ -76,7 +87,7 @@ export default function Finance() {
   const periodTransactions = useMemo(() => {
     const selDate = new Date(selectedDate);
     return {
-      orders: orders.filter(o => {
+      orders: activeOrders.filter(o => {
         const d = new Date(o.date);
         if (filterType === 'monthly') return d.getFullYear() === selDate.getFullYear() && d.getMonth() === selDate.getMonth();
         if (filterType === 'yearly') return d.getFullYear() === selDate.getFullYear();
@@ -95,14 +106,27 @@ export default function Finance() {
         return getDateStr(inv.created_at) === selectedDate;
       })
     };
-  }, [orders, expenses, purchaseInvoices, selectedDate, filterType]);
+  }, [activeOrders, expenses, purchaseInvoices, selectedDate, filterType]);
 
-  const dailyIncome = periodTransactions.orders.reduce((sum, o) => sum + o.paid_amount, 0);
-  const dailyExpensesTotal = periodTransactions.expenses.reduce((sum, e) => sum + e.amount, 0);
+  const collectedFromInvoices = periodTransactions.orders.filter(o => o.type === 'sale').reduce((sum, o) => sum + o.paid_amount, 0) +
+                                periodTransactions.orders.filter(o => o.type === 'payment').reduce((sum, o) => sum + allocatePayment(o, activeOrders).toSales, 0);
+  const collectedFromOther = periodTransactions.orders.filter(o => o.type === 'payment').reduce((sum, o) => sum + allocatePayment(o, activeOrders).toOldDebt, 0) + 
+                             periodTransactions.expenses.filter(e => e.amount < 0).reduce((sum, e) => sum + Math.abs(e.amount), 0);
+  const dailyIncome = collectedFromInvoices + collectedFromOther;
+
+  const totalCustomerDebt = useMemo(() => {
+    return Math.max(0, activeOrders.reduce((sum, o) => sum + (o.total - o.paid_amount), 0));
+  }, [activeOrders]);
+
+  const totalSupplierDebt = useMemo(() => {
+    return Math.max(0, purchaseInvoices.reduce((sum, inv) => sum + (inv.total - inv.paid_amount), 0));
+  }, [purchaseInvoices]);
+  const dailyExpensesTotal = periodTransactions.expenses.filter(e => e.amount > 0).reduce((sum, e) => sum + e.amount, 0);
   const dailyPurchasesTotal = periodTransactions.purchases.reduce((sum, inv) => sum + inv.paid_amount, 0);
   const dailyReturnsValue = periodTransactions.orders.reduce((sum, o) => {
-    return sum + o.items.reduce((iSum, item) => iSum + (item.returned_quantity * item.sale_price), 0);
+    return sum + calculateOrderReturnValue(o);
   }, 0);
+  const invoiceProfitTotal = periodTransactions.orders.reduce((sum, order) => sum + calculateInvoiceProfit(order), 0);
 
   const dailyNet = dailyIncome - dailyExpensesTotal - dailyPurchasesTotal - dailyReturnsValue;
   const closingBalance = openingBalance + dailyNet;
@@ -116,16 +140,13 @@ export default function Finance() {
     
     const outRet = periodTransactions.orders.reduce((sum, o) => {
       if (o.payment_method !== method) return sum;
-      const itemsSum = o.items.reduce((s, i) => s + (i.quantity * i.sale_price), 0);
-      const discountRatio = itemsSum > 0 ? o.total / itemsSum : 1;
-      return sum + (o.items.reduce((iSum, item) => iSum + (item.returned_quantity * item.sale_price), 0) * discountRatio);
+      return sum + calculateOrderReturnValue(o);
     }, 0);
 
     return inc - outExp - outPur - outRet;
   };
 
   const methodsBreakdown = {
-    // الرصيد البدائي يُعتبر كاش فعلي في الخزينة — يُضاف على قيمة الكاش
     cash: getDailyByMethod('cash') + openingBalance,
     visa: getDailyByMethod('visa'),
     wallet: getDailyByMethod('wallet'),
@@ -139,7 +160,7 @@ export default function Finance() {
     periodTransactions.orders.forEach(o => {
       list.push({
         id: o.id,
-        type: o.type === 'sale' ? 'إيراد مبيعات' : 'تحصيل مديونية',
+        type: o.type === 'sale' ? 'إيراد مبيعات' : 'تحصيل من العميل',
         amount: o.paid_amount,
         method: o.payment_method,
         split: { cash: o.paid_cash, visa: o.paid_visa, wallet: o.paid_wallet, instapay: o.paid_instapay },
@@ -151,10 +172,7 @@ export default function Finance() {
         originType: 'order'
       });
 
-      // Add return entry if any items were returned in this order
-      const itemsSum = o.items.reduce((s, i) => s + (i.quantity * i.sale_price), 0);
-      const discountRatio = itemsSum > 0 ? o.total / itemsSum : 1;
-      const returnedVal = o.items.reduce((s, i) => s + (i.returned_quantity * i.sale_price), 0) * discountRatio;
+      const returnedVal = calculateOrderReturnValue(o);
       
       if (returnedVal > 0) {
         list.push({
@@ -162,7 +180,7 @@ export default function Finance() {
           type: 'مرتجع مبيعات',
           amount: returnedVal,
           method: o.payment_method,
-          split: { cash: returnedVal, visa: 0, wallet: 0, instapay: 0 }, // Simplified for returns
+          split: { cash: returnedVal, visa: 0, wallet: 0, instapay: 0 },
           note: `مرتجع من فاتورة #${o.id}`,
           isOut: true,
           time: new Date(o.date).toLocaleString('ar-SA'),
@@ -172,14 +190,20 @@ export default function Finance() {
     });
 
     periodTransactions.expenses.forEach(e => {
+      const isIncome = e.amount < 0;
       list.push({
         id: e.id,
-        type: `مصروف: ${e.category}`,
-        amount: e.amount,
+        type: isIncome ? `إيراد: ${e.category}` : `مصروف: ${e.category}`,
+        amount: Math.abs(e.amount),
         method: e.payment_method,
-        split: { cash: e.paid_cash, visa: e.paid_visa, wallet: e.paid_wallet, instapay: e.paid_instapay },
+        split: { 
+          cash: Math.abs(e.paid_cash || 0), 
+          visa: Math.abs(e.paid_visa || 0), 
+          wallet: Math.abs(e.paid_wallet || 0), 
+          instapay: Math.abs(e.paid_instapay || 0) 
+        },
         note: e.note,
-        isOut: true,
+        isOut: !isIncome,
         time: new Date(e.date).toLocaleString('ar-SA'),
         rawDate: e.date,
         original: e,
@@ -192,7 +216,7 @@ export default function Finance() {
       const isPayment = inv.total === 0;
       list.push({
         id: inv.id,
-        type: isPayment ? 'سداد مديونية مورد' : 'شراء بضاعة',
+        type: isPayment ? 'سداد للمورد' : 'شراء بضاعة',
         amount: inv.paid_amount,
         method: inv.payment_method,
         split: { cash: inv.paid_cash, visa: inv.paid_visa, wallet: inv.paid_wallet, instapay: inv.paid_instapay },
@@ -214,17 +238,19 @@ export default function Finance() {
     if (expense) {
       setEditingExpense(expense);
       setFormData({ 
+        transaction_type: expense.amount < 0 ? 'income' : 'expense',
         category: expense.category, 
-        amount: expense.amount.toString(), 
-        paid_cash: expense.paid_cash?.toString() || '',
-        paid_visa: expense.paid_visa?.toString() || '',
-        paid_wallet: expense.paid_wallet?.toString() || '',
-        paid_instapay: expense.paid_instapay?.toString() || '',
+        amount: Math.abs(expense.amount).toString(), 
+        paid_cash: Math.abs(expense.paid_cash || 0).toString(),
+        paid_visa: Math.abs(expense.paid_visa || 0).toString(),
+        paid_wallet: Math.abs(expense.paid_wallet || 0).toString(),
+        paid_instapay: Math.abs(expense.paid_instapay || 0).toString(),
         note: expense.note 
       });
     } else {
       setEditingExpense(null);
       setFormData({ 
+        transaction_type: 'expense',
         category: 'عام', 
         amount: '', 
         paid_cash: '', 
@@ -246,13 +272,15 @@ export default function Finance() {
     const amountNum = cash + visa + wallet + insta;
     if (amountNum <= 0) return alert('يرجى إدخال مبالغ الدفع أولاً');
 
+    const multiplier = formData.transaction_type === 'income' ? -1 : 1;
+
     const expenseData = {
       category: formData.category,
-      amount: amountNum,
-      paid_cash: cash,
-      paid_visa: visa,
-      paid_wallet: wallet,
-      paid_instapay: insta,
+      amount: amountNum * multiplier,
+      paid_cash: cash * multiplier,
+      paid_visa: visa * multiplier,
+      paid_wallet: wallet * multiplier,
+      paid_instapay: insta * multiplier,
       note: formData.note,
       payment_method: cash >= visa ? 'cash' : 'visa'
     };
@@ -273,6 +301,7 @@ export default function Finance() {
       ['رصيد أول اليوم', openingBalance],
       ['إجمالي الداخل (اليوم)', dailyIncome],
       ['إجمالي الخارج (اليوم)', dailyExpensesTotal + dailyPurchasesTotal + dailyReturnsValue],
+      ['إجمالي الربح من الفواتير', invoiceProfitTotal],
       ['صافي اليوم', dailyNet],
       ['رصيد الإغلاق', closingBalance],
       [''],
@@ -362,7 +391,7 @@ export default function Finance() {
           <td>${((isOrder ? item.sale_price : item.purchase_price) * item.quantity).toFixed(2)}</td>
         </tr>
       `).join('')}
-      ${inv.total === 0 ? '<tr><td colspan="4" style="padding:40px; color:#059669; font-weight:black; font-size:16px;">إيصال سداد مديونية للمورد</td></tr>' : ''}
+      ${inv.total === 0 ? '<tr><td colspan="4" style="padding:40px; color:#059669; font-weight:black; font-size:16px;">إيصال سداد للمورد</td></tr>' : ''}
     </tbody>
   </table>
 
@@ -510,8 +539,11 @@ export default function Finance() {
             ))}
           </div>
 
-          <div className="flex items-center gap-3 bg-white px-4 py-2.5 rounded-2xl border border-slate-200 shadow-inner">
+          <div className="relative flex items-center gap-3 bg-white px-4 py-2.5 rounded-2xl border border-slate-200 shadow-inner min-w-[190px]">
             <Calendar size={20} className="text-indigo-600" />
+            <span className="flex-1 text-center font-black text-slate-700 tabular-nums" dir="ltr">
+              {selectedDateDisplay}
+            </span>
             <input 
               type={filterType === 'monthly' ? 'month' : (filterType === 'yearly' ? 'number' : 'date')} 
               value={filterType === 'yearly' ? selectedDate.split('-')[0] : (filterType === 'monthly' ? selectedDate.slice(0,7) : selectedDate)}
@@ -525,7 +557,7 @@ export default function Finance() {
                   setSelectedDate(val);
                 }
               }}
-              className="bg-transparent font-black text-slate-700 outline-none w-32"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
               placeholder={filterType === 'yearly' ? 'سنة' : ''}
               {...(filterType === 'yearly' ? { min: 2020, max: 2050 } : {})}
             />
@@ -551,14 +583,45 @@ export default function Finance() {
               style={{ backgroundColor: tc }}
               className="flex items-center gap-2 text-white px-6 py-3 rounded-2xl font-bold hover:opacity-90 transition shadow-lg"
             >
-              <Plus size={20} /> مصروف جديد
+              <Plus size={20} /> معاملة مالية
             </button>
           </div>
         </div>
       </div>
 
+      {/* New Breakdown Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
+        <div className="bg-white p-6 rounded-[32px] border border-emerald-100 shadow-sm">
+          <p className="text-emerald-600 font-bold text-xs mb-1">المحصل من الفواتير</p>
+          <h3 className="text-2xl font-black text-emerald-700">
+            {collectedFromInvoices.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
+          </h3>
+        </div>
+
+        <div className="bg-white p-6 rounded-[32px] border border-indigo-100 shadow-sm">
+          <p className="text-indigo-600 font-bold text-xs mb-1">إيرادات أخرى ومسدد آجل</p>
+          <h3 className="text-2xl font-black text-indigo-700">
+            {collectedFromOther.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
+          </h3>
+        </div>
+
+        <div className="bg-white p-6 rounded-[32px] border border-amber-100 shadow-sm">
+          <p className="text-amber-600 font-bold text-xs mb-1">إجمالي الآجل على العملاء</p>
+          <h3 className="text-2xl font-black text-amber-700">
+            {totalCustomerDebt.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
+          </h3>
+        </div>
+
+        <div className="bg-white p-6 rounded-[32px] border border-red-100 shadow-sm">
+          <p className="text-red-600 font-bold text-xs mb-1">إجمالي المديونية للموردين</p>
+          <h3 className="text-2xl font-black text-red-700">
+            {totalSupplierDebt.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
+          </h3>
+        </div>
+      </div>
+
       {/* Financial Status Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6 mb-8">
         {/* Opening Balance */}
         <div className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm">
           <p className="text-slate-400 font-bold text-xs mb-1">رصيد الافتتاح</p>
@@ -577,7 +640,18 @@ export default function Finance() {
             +{dailyIncome.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
           </h3>
           <div className="mt-2 text-[10px] text-emerald-500 font-bold flex items-center gap-1">
-             {filterType === 'daily' ? 'مبيعات وتحصيل مديونيات اليوم' : (filterType === 'monthly' ? 'مبيعات وتحصيل مديونيات الشهر' : 'مبيعات وتحصيل مديونيات السنة')}
+             {filterType === 'daily' ? 'مبيعات وتحصيل من العملاء اليوم' : (filterType === 'monthly' ? 'مبيعات وتحصيل من العملاء الشهر' : 'مبيعات وتحصيل من العملاء السنة')}
+          </div>
+        </div>
+
+        {/* Invoice Profit */}
+        <div className="bg-white p-6 rounded-[32px] border border-emerald-100 shadow-sm bg-emerald-50/20">
+          <p className="text-emerald-600 font-bold text-xs mb-1">إجمالي الربح من الفواتير</p>
+          <h3 className="text-2xl font-black text-emerald-700">
+            {invoiceProfitTotal.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
+          </h3>
+          <div className="mt-2 text-[10px] text-emerald-500 font-bold flex items-center gap-1">
+            <FileText size={12} /> {filterType === 'daily' ? 'ربح فواتير اليوم فقط' : (filterType === 'monthly' ? 'ربح فواتير الشهر فقط' : 'ربح فواتير السنة فقط')}
           </div>
         </div>
 
@@ -729,33 +803,59 @@ export default function Finance() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
             <div 
-              className="p-8 text-white flex justify-between items-center"
+              className="p-8 text-white flex justify-between items-center shrink-0"
               style={{ backgroundColor: tc }}
             >
               <div>
-                <h2 className="text-2xl font-black">{editingExpense ? 'تعديل المصروف' : 'إضافة مصروف جديد'}</h2>
-                <p className="text-white/70 text-sm mt-1">سجل تفاصيل المصاريف التشغيلية</p>
+                <h2 className="text-2xl font-black">{editingExpense ? 'تعديل معاملة' : 'تسجيل معاملة مالية'}</h2>
+                <p className="text-white/70 text-sm mt-1">سجل تفاصيل المصاريف أو الإيرادات الخارجية</p>
               </div>
               <button onClick={() => setShowModal(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition text-white">
                 <X size={24} />
               </button>
             </div>
-            <div className="p-8 space-y-6">
+            <div className="p-8 space-y-6 overflow-y-auto">
+              <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-2xl">
+                <button
+                  onClick={() => setFormData({...formData, transaction_type: 'expense'})}
+                  className={`flex-1 py-3 rounded-xl font-black text-sm transition-all ${formData.transaction_type === 'expense' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  مصروف
+                </button>
+                <button
+                  onClick={() => setFormData({...formData, transaction_type: 'income'})}
+                  className={`flex-1 py-3 rounded-xl font-black text-sm transition-all ${formData.transaction_type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  إيراد
+                </button>
+              </div>
+
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-2">الفئة</label>
+                <label className="block text-sm font-bold text-slate-700 mb-2">{formData.transaction_type === 'expense' ? 'فئة المصروف' : 'فئة الإيراد'}</label>
                 <select 
                   className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 focus:ring-2 focus:ring-indigo-500/20 outline-none font-bold"
                   value={formData.category}
                   onChange={e => setFormData({...formData, category: e.target.value})}
                 >
-                  <option value="عام">عام</option>
-                  <option value="إيجار">إيجار</option>
-                  <option value="كهرباء/مياه">كهرباء / مياه</option>
-                  <option value="رواتب">رواتب</option>
-                  <option value="نقل/توصيل">نقل / توصيل</option>
-                  <option value="صيانة">صيانة</option>
+                  {formData.transaction_type === 'expense' ? (
+                    <>
+                      <option value="عام">عام</option>
+                      <option value="إيجار">إيجار</option>
+                      <option value="كهرباء/مياه">كهرباء / مياه</option>
+                      <option value="رواتب">رواتب</option>
+                      <option value="نقل/توصيل">نقل / توصيل</option>
+                      <option value="صيانة">صيانة</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="عام">إيراد عام</option>
+                      <option value="خدمات">خدمات إضافية</option>
+                      <option value="استثمار">عائد استثمار</option>
+                      <option value="أخرى">أخرى</option>
+                    </>
+                  )}
                 </select>
               </div>
 
@@ -800,7 +900,7 @@ export default function Finance() {
 
               <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex justify-between items-center">
                 <span className="text-sm font-bold text-slate-500">إجمالي المبلغ:</span>
-                <span className="text-2xl font-black text-red-600">
+                <span className={`text-2xl font-black ${formData.transaction_type === 'income' ? 'text-emerald-600' : 'text-red-600'}`}>
                   {((parseFloat(formData.paid_cash) || 0) + (parseFloat(formData.paid_visa) || 0) + (parseFloat(formData.paid_wallet) || 0) + (parseFloat(formData.paid_instapay) || 0)).toLocaleString()} {storeSettings.currency}
                 </span>
               </div>

@@ -8,6 +8,7 @@ import Overview from './pages/admin/Overview';
 import Inventory from './pages/admin/Inventory';
 import Invoices from './pages/admin/Invoices';
 import Customers from './pages/admin/Customers';
+import WhatsAppCampaigns from './pages/admin/WhatsAppCampaigns';
 import Suppliers from './pages/admin/Suppliers';
 import DeferredAccounts from './pages/admin/DeferredAccounts';
 import Settings from './pages/admin/Settings';
@@ -15,6 +16,8 @@ import Analytics from './pages/admin/Analytics';
 import Finance from './pages/admin/Finance';
 import Cashiers from './pages/admin/Cashiers';
 import Employees from './pages/admin/Employees';
+import Budget from './pages/admin/Budget';
+import Financing from './pages/admin/Financing';
 import PublicInvoice from './pages/PublicInvoice';
 import { useStore } from './store/useStore';
 
@@ -94,8 +97,11 @@ function ProtectedRoutePOS({ children }: { children: React.ReactNode }) {
 
 function App() {
   const { loadAll, loadSettingsOnly, loadProductsOnly, isLoading, dbError } = useStore();
+  const isPublicInvoiceRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/view-invoice/');
 
   useEffect(() => {
+    if (isPublicInvoiceRoute) return;
+
     loadAll();
 
     const channel = new BroadcastChannel('cashier-sync');
@@ -108,9 +114,9 @@ function App() {
     };
     return () => channel.close();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isPublicInvoiceRoute]);
 
-  if (isLoading) {
+  if (isLoading && !isPublicInvoiceRoute) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-slate-50 gap-4">
         <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
@@ -119,7 +125,7 @@ function App() {
     );
   }
 
-  if (dbError) {
+  if (dbError && !isPublicInvoiceRoute) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-red-50 gap-4 p-8 text-center">
         <div className="text-5xl">⚠️</div>
@@ -161,11 +167,14 @@ function App() {
             <Route path="inventory" element={<Inventory />} />
             <Route path="invoices" element={<Invoices />} />
             <Route path="customers" element={<Customers />} />
+            <Route path="whatsapp-campaigns" element={<WhatsAppCampaigns />} />
             <Route path="suppliers" element={<Suppliers />} />
             <Route path="cashiers" element={<Cashiers />} />
             <Route path="deferred" element={<DeferredAccounts />} />
             <Route path="finance" element={<Finance />} />
+            <Route path="financing" element={<Financing />} />
             <Route path="employees" element={<Employees />} />
+            <Route path="budget" element={<Budget />} />
             <Route path="settings" element={<Settings />} />
           </Route>
           <Route path="/view-invoice/:id" element={<PublicInvoice />} />

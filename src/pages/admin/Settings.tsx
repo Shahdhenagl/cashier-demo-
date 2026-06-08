@@ -140,6 +140,19 @@ export default function Settings() {
             />
           </div>
 
+          <div className="col-span-2">
+            <label className="block text-sm font-bold text-slate-700 mb-2">رابط المقر على الخريطة (Location URL)</label>
+            <input 
+              type="text" 
+              dir="ltr"
+              value={formData.locationUrl || ''}
+              onChange={(e) => setFormData({...formData, locationUrl: e.target.value})}
+              className="w-full bg-slate-50 border border-slate-200 py-3 px-4 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none transition text-left"
+              placeholder="https://maps.app.goo.gl/..."
+            />
+            <p className="text-[11px] text-slate-400 mt-1 text-right">سيظهر هذا الرابط كزر (المقر) في الفاتورة الإلكترونية، وفي رسائل الواتساب.</p>
+          </div>
+
           <div>
             <label className="block text-sm font-bold text-slate-700 mb-2">نسبة الضريبة المضافة (%)</label>
             <input 

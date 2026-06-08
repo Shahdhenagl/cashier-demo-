@@ -52,6 +52,7 @@ create table if not exists customers (
   custom_id text unique,
   name text not null default 'بدون اسم',
   phone text unique not null,
+  card_number text,
   created_at timestamptz default now()
 );
 
@@ -90,6 +91,9 @@ create table if not exists orders (
   paid_amount numeric default 0,
   type text default 'sale',
   customer_id uuid references customers(id) on delete set null,
+  is_deleted boolean not null default false,
+  deleted_at timestamptz,
+  deletion_reason text,
   created_at timestamptz default now()
 );
 
@@ -111,6 +115,7 @@ create table if not exists order_items (
   barcode text,
   quantity integer default 1,
   returned_quantity integer default 0,
+  refunded_amount numeric default 0,
   sale_price numeric default 0,
   purchase_price numeric default 0
 );
@@ -120,6 +125,50 @@ create table if not exists expenses (
   id uuid default gen_random_uuid() primary key,
   category text not null,
   amount numeric not null default 0,
+  note text,
+  created_at timestamptz default now()
+);
+
+-- جدول السلف والجمعيات
+create table if not exists financing_accounts (
+  id uuid default gen_random_uuid() primary key,
+  type text not null default 'loan',
+  lender_name text not null,
+  lender_phone text default '',
+  lender_details text default '',
+  description text default '',
+  principal_amount numeric not null default 0,
+  collection_amount numeric not null default 0,
+  collection_date date not null,
+  installment_count integer not null default 1,
+  status text not null default 'open',
+  created_at timestamptz default now()
+);
+
+create table if not exists financing_payments (
+  id uuid default gen_random_uuid() primary key,
+  account_id uuid references financing_accounts(id) on delete cascade,
+  payment_type text not null,
+  due_date date not null,
+  amount numeric not null default 0,
+  paid_amount numeric not null default 0,
+  remaining_amount numeric not null default 0,
+  status text not null default 'pending',
+  paid_at timestamptz,
+  expense_id uuid references expenses(id) on delete set null,
+  note text,
+  created_at timestamptz default now()
+);
+
+create table if not exists financing_transactions (
+  id uuid default gen_random_uuid() primary key,
+  account_id uuid references financing_accounts(id) on delete cascade,
+  payment_id uuid references financing_payments(id) on delete cascade,
+  transaction_type text not null,
+  amount numeric not null default 0,
+  remaining_after numeric not null default 0,
+  payment_method text not null default 'cash',
+  expense_id uuid references expenses(id) on delete set null,
   note text,
   created_at timestamptz default now()
 );
@@ -135,6 +184,9 @@ alter table orders enable row level security;
 alter table order_items enable row level security;
 alter table invoice_counter enable row level security;
 alter table expenses enable row level security;
+alter table financing_accounts enable row level security;
+alter table financing_payments enable row level security;
+alter table financing_transactions enable row level security;
 alter table suppliers enable row level security;
 alter table purchase_invoices enable row level security;
 alter table purchase_items enable row level security;
@@ -148,6 +200,9 @@ create policy "allow all" on orders for all using (true) with check (true);
 create policy "allow all" on order_items for all using (true) with check (true);
 create policy "allow all" on invoice_counter for all using (true) with check (true);
 create policy "allow all" on expenses for all using (true) with check (true);
+create policy "allow all" on financing_accounts for all using (true) with check (true);
+create policy "allow all" on financing_payments for all using (true) with check (true);
+create policy "allow all" on financing_transactions for all using (true) with check (true);
 create policy "allow all" on suppliers for all using (true) with check (true);
 create policy "allow all" on purchase_invoices for all using (true) with check (true);
 create policy "allow all" on purchase_items for all using (true) with check (true);

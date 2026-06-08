@@ -1,16 +1,110 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../store/useStore';
-import type { PurchaseItem } from '../../store/useStore';
+import type { PurchaseItem, Product } from '../../store/useStore';
 import { Users, Search, Plus, Edit2, Trash2, Phone, MapPin, Calendar, ShoppingCart, FileText, X, ChevronDown, Printer, Eye } from 'lucide-react';
+import { normalizeArabic } from '../../utils/textUtils';
+
+function ProductSearchSelect({ 
+  value, 
+  onChange, 
+  products
+}: { 
+  value: string; 
+  onChange: (val: string) => void; 
+  products: Product[];
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedProduct = products.find(p => p.id === value);
+
+  const normalizedSearch = normalizeArabic(search);
+  const searchTerms = normalizedSearch.split(' ').filter(t => t.trim() !== '');
+
+  const filtered = products.filter(p => {
+    const normalizedName = normalizeArabic(p.name);
+    return searchTerms.length === 0 || searchTerms.every(term => normalizedName.includes(term)) || (p.barcode && p.barcode.includes(search));
+  });
+
+  return (
+    <div className="relative flex-1" ref={wrapperRef}>
+      <div 
+        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm cursor-text flex justify-between items-center font-medium focus-within:ring-2 focus-within:ring-indigo-400 transition"
+        onClick={() => setIsOpen(true)}
+      >
+        {!isOpen ? (
+           <span className={selectedProduct ? 'text-slate-800' : 'text-slate-400'}>
+             {selectedProduct ? selectedProduct.name : '-- ابحث عن منتج --'}
+           </span>
+        ) : (
+          <input
+            type="text"
+            className="w-full outline-none bg-transparent"
+            placeholder="اكتب اسم المنتج أو الباركود..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            autoFocus
+          />
+        )}
+        <ChevronDown size={16} className="text-slate-400" />
+      </div>
+
+      {isOpen && (
+        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-60 overflow-y-auto">
+          <div 
+            className="px-4 py-2.5 text-sm font-bold text-indigo-600 hover:bg-indigo-50 cursor-pointer flex items-center gap-2 border-b border-slate-100"
+            onClick={() => {
+              onChange('NEW_PRODUCT');
+              setIsOpen(false);
+              setSearch('');
+            }}
+          >
+            <Plus size={16} /> إضافة منتج جديد...
+          </div>
+          {filtered.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-slate-400 text-center">لا توجد نتائج</div>
+          ) : (
+            filtered.map(p => (
+              <div 
+                key={p.id}
+                className="px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer flex justify-between items-center"
+                onClick={() => {
+                  onChange(p.id);
+                  setIsOpen(false);
+                  setSearch('');
+                }}
+              >
+                <span>{p.name}</span>
+                {p.barcode && <span className="text-xs text-slate-400 font-mono">{p.barcode}</span>}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Suppliers() {
-  const { suppliers, addSupplier, updateSupplier, deleteSupplier, storeSettings, purchaseInvoices, addPurchaseInvoice, products } = useStore();
+  const { suppliers, addSupplier, updateSupplier, deleteSupplier, storeSettings, purchaseInvoices, addPurchaseInvoice, updatePurchaseInvoice, products } = useStore();
   const [activeTab, setActiveTab] = useState<'suppliers' | 'invoices'>('suppliers');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchQueryInvoices, setSearchQueryInvoices] = useState('');
   const [showSupplierModal, setShowSupplierModal] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<any>(null);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [editingPurchaseInvoice, setEditingPurchaseInvoice] = useState<any>(null);
   const [selectedSupplierProfile, setSelectedSupplierProfile] = useState<any>(null);
   const [showSupplierProfile, setShowSupplierProfile] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -90,16 +184,8 @@ export default function Suppliers() {
       };
 
       const finalPaidAmount = splitPayments.cash + splitPayments.visa + splitPayments.wallet + splitPayments.instapay;
-      
-      // Handle overpayment (Change)
       const change = Math.max(0, finalPaidAmount - invTotal);
-      
-      // Adjust cash to exclude change
-      const adjustedSplit = {
-        ...splitPayments,
-        cash: Math.max(0, splitPayments.cash - change)
-      };
-
+      const adjustedSplit = { ...splitPayments, cash: Math.max(0, splitPayments.cash - change) };
       const methods = [
         { name: 'cash', amount: adjustedSplit.cash },
         { name: 'visa', amount: adjustedSplit.visa },
@@ -109,17 +195,32 @@ export default function Suppliers() {
       const primaryMethod = methods.sort((a, b) => b.amount - a.amount)[0].name;
       const effectivePaidAmount = finalPaidAmount - change;
 
-      const invoiceNumber = `PO-${Date.now()}`;
-      await addPurchaseInvoice({
-        invoice_number: invoiceNumber,
-        supplier_id: invSupplierId,
-        total: invTotal,
-        paid_amount: effectivePaidAmount,
-        payment_method: primaryMethod as any,
-      }, items, adjustedSplit);
+      if (editingPurchaseInvoice) {
+        await updatePurchaseInvoice(
+          editingPurchaseInvoice.id,
+          {
+            total: invTotal,
+            paid_amount: effectivePaidAmount,
+            payment_method: primaryMethod as any,
+          } as any,
+          items,
+          adjustedSplit
+        );
+        alert('تم تعديل الفاتورة بنجاح وتحديث المخزن');
+      } else {
+        const invoiceNumber = `PO-${Date.now()}`;
+        await addPurchaseInvoice({
+          invoice_number: invoiceNumber,
+          supplier_id: invSupplierId,
+          total: invTotal,
+          paid_amount: effectivePaidAmount,
+          payment_method: primaryMethod as any,
+        }, items, adjustedSplit);
+        alert('تم حفظ الفاتورة بنجاح وتحديث المخزن');
+      }
 
-      alert('تم حفظ الفاتورة بنجاح وتحديث المخزن');
       setShowInvoiceModal(false);
+      setEditingPurchaseInvoice(null);
       setInvSupplierId('');
       setInvPaidCash('');
       setInvPaidVisa('');
@@ -374,6 +475,13 @@ export default function Suppliers() {
               setFormData({ name: '', phone: '', address: '' });
               setShowSupplierModal(true);
             } else {
+              setEditingPurchaseInvoice(null);
+              setInvSupplierId('');
+              setInvPaidCash('');
+              setInvPaidVisa('');
+              setInvPaidWallet('');
+              setInvPaidInstapay('');
+              setInvItems([{ product_id: '', quantity: '1', purchase_price: '' }]);
               setShowInvoiceModal(true);
             }
           }}
@@ -522,6 +630,22 @@ export default function Suppliers() {
                         {remaining > 0 && <p className="text-sm font-bold text-red-500">متبقي: {remaining.toLocaleString()}</p>}
                       </div>
                       <button
+                        onClick={() => {
+                          setEditingPurchaseInvoice(inv);
+                          setInvSupplierId(inv.supplier_id);
+                          setInvPaidCash(inv.paid_cash ? inv.paid_cash.toString() : (inv.payment_method === 'cash' ? inv.paid_amount.toString() : ''));
+                          setInvPaidVisa(inv.paid_visa ? inv.paid_visa.toString() : (inv.payment_method === 'visa' ? inv.paid_amount.toString() : ''));
+                          setInvPaidWallet(inv.paid_wallet ? inv.paid_wallet.toString() : (inv.payment_method === 'wallet' ? inv.paid_amount.toString() : ''));
+                          setInvPaidInstapay(inv.paid_instapay ? inv.paid_instapay.toString() : (inv.payment_method === 'instapay' ? inv.paid_amount.toString() : ''));
+                          setInvItems((inv.items && inv.items.length > 0) ? inv.items.map((i: any) => ({ product_id: i.product_id, quantity: i.quantity.toString(), purchase_price: i.purchase_price.toString() })) : [{ product_id: '', quantity: '1', purchase_price: '' }]);
+                          setShowInvoiceModal(true);
+                        }}
+                        className="p-3 bg-blue-50 text-blue-600 rounded-2xl hover:bg-blue-100 transition shadow-sm opacity-0 group-hover:opacity-100"
+                        title="تعديل الفاتورة"
+                      >
+                        <Edit2 size={20} />
+                      </button>
+                      <button
                         onClick={() => printPurchaseInvoice(inv)}
                         className="p-3 bg-slate-50 text-slate-600 rounded-2xl hover:bg-slate-100 transition shadow-sm opacity-0 group-hover:opacity-100"
                         title="طباعة الفاتورة"
@@ -572,7 +696,7 @@ export default function Suppliers() {
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[90vh]">
             <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center flex-shrink-0">
-              <h2 className="text-xl font-black text-slate-800 flex items-center gap-2"><ShoppingCart size={22} style={{ color: tc }} />فاتورة مشتريات جديدة</h2>
+              <h2 className="text-xl font-black text-slate-800 flex items-center gap-2"><ShoppingCart size={22} style={{ color: tc }} />{editingPurchaseInvoice ? 'تعديل فاتورة المشتريات' : 'فاتورة مشتريات جديدة'}</h2>
               <button onClick={() => setShowInvoiceModal(false)} className="p-2 rounded-xl hover:bg-slate-200 transition"><X size={20} /></button>
             </div>
 
@@ -601,13 +725,11 @@ export default function Suppliers() {
                   <div className="space-y-3">
                     {invItems.map((item, idx) => (
                       <div key={idx} className="flex gap-2 items-center bg-slate-50 rounded-2xl p-3 border border-slate-100">
-                        <div className="relative flex-1">
-                          <select value={item.product_id} onChange={e => updateInvRow(idx, 'product_id', e.target.value)} className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 font-medium">
-                            <option value="">-- المنتج --</option>
-                            <option value="NEW_PRODUCT" className="text-indigo-600 font-bold">+ إضافة منتج جديد...</option>
-                            {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                          </select>
-                        </div>
+                        <ProductSearchSelect
+                          value={item.product_id}
+                          onChange={val => updateInvRow(idx, 'product_id', val)}
+                          products={products}
+                        />
                         <input
                           type="number" min="1" placeholder="الكمية"
                           value={item.quantity} onChange={e => updateInvRow(idx, 'quantity', e.target.value)}
