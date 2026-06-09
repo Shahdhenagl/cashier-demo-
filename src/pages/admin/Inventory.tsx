@@ -66,7 +66,7 @@ export default function Inventory() {
     const normalizedName = normalizeArabic(p.name);
     const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => normalizedName.includes(term)) || (p.barcode && p.barcode.includes(searchQuery));
     const matchesStock = showLowStock ? p.stock_quantity < 5 : true;
-    const matchesHidden = showHidden ? true : !p.is_hidden; // بالإفتراضي نخفي المنتجات المخفية
+    const matchesHidden = showHidden ? p.is_hidden === true : !p.is_hidden; // showHidden=true → المخفيين فقط
     return matchesSearch && matchesStock && matchesHidden;
   });
   const hiddenCount = products.filter(p => p.is_hidden).length;

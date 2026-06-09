@@ -7,9 +7,11 @@ const TYPE_LABELS = {
   supplier_payment: 'سداد لمورد',
   return: 'مرتجع فاتورة',
   delete_invoice: 'حذف فاتورة',
+  edit_invoice: 'تعديل فاتورة',
   stock_low: 'تنبيه مخزون منخفض',
   financing_collection: 'تحصيل تمويل / سلفة',
   financing_repayment: 'سداد تمويل / سلفة',
+  custom_note: 'رسالة من الكاشير',
 };
 
 function line(label, value) {
@@ -90,6 +92,23 @@ function formatMessage(payload) {
   if (payload.refundTotal !== undefined) lines.push(line('قيمة المرتجع', money(payload.refundTotal, currency)));
   if (payload.reason) lines.push(line('سبب الحذف', payload.reason));
   if (payload.invoiceUrl) lines.push(line('رابط الفاتورة', payload.invoiceUrl));
+  if (payload.noteText) lines.push(line('نص الرسالة', payload.noteText));
+
+  if (payload.type === 'edit_invoice' && payload.editDetails) {
+    lines.push('', 'تفاصيل التعديل:');
+    if (payload.editDetails.oldTotal !== undefined && payload.editDetails.newTotal !== undefined) {
+      lines.push(`الإجمالي قبل التعديل: ${money(payload.editDetails.oldTotal, currency)}`);
+      lines.push(`الإجمالي بعد التعديل: ${money(payload.editDetails.newTotal, currency)}`);
+    }
+    if (payload.editDetails.oldPaid !== undefined && payload.editDetails.newPaid !== undefined) {
+      lines.push(`المدفوع قبل التعديل: ${money(payload.editDetails.oldPaid, currency)}`);
+      lines.push(`المدفوع بعد التعديل: ${money(payload.editDetails.newPaid, currency)}`);
+    }
+    if (payload.editDetails.notes) {
+      lines.push(`سبب التعديل: ${payload.editDetails.notes}`);
+    }
+  }
+
 
   const itemLines = formatItems(
     payload.items,

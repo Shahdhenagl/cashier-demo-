@@ -1,23 +1,26 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '../../store/useStore';
-import { BookUser, CreditCard, Search, Banknote, X, FileText, Table as TableIcon, Plus, User, UserPlus, Truck } from 'lucide-react';
+import { BookUser, CreditCard, Search, Banknote, X, FileText, Table as TableIcon, Plus, User, UserPlus, Truck, RefreshCw } from 'lucide-react';
 import { normalizeArabic } from '../../utils/textUtils';
+import { calculateOrderReturnValue } from '../../utils/returns';
 import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
 export default function DeferredAccounts() {
-  const { customers, orders, suppliers, purchaseInvoices, storeSettings, checkout, addPurchaseInvoice, addSupplier } = useStore();
+  const { customers, orders, suppliers, purchaseInvoices, storeSettings, checkout, payInvoiceDebt, addPurchaseInvoice, addSupplier } = useStore();
   const activeOrders = orders.filter((order) => !order.is_deleted);
   
   const [activeTab, setActiveTab] = useState<'customers' | 'suppliers'>('customers');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [debtLoading, setDebtLoading] = useState(true);
   
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<any>(null); // Customer or Supplier
+  const [selectedInvoice, setSelectedInvoice] = useState<any>(null);
   const [paymentForm, setPaymentForm] = useState({
     cash: '',
     visa: '',
@@ -32,27 +35,83 @@ export default function DeferredAccounts() {
   const [addDebtAmount, setAddDebtAmount] = useState<string>('');
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // --- Customers Logic ---
+  // --- Customers Logic (جلب مباشر من Supabase بدون قيود الـ 200 فاتورة) ---
   const filteredSearchCustomers = customers.filter(c => 
     c.name.toLowerCase().includes(addDebtSearch.toLowerCase()) || 
     c.phone.includes(addDebtSearch)
   ).slice(0, 5);
 
-  const customersWithDebt = customers.map(c => {
-    const customerOrders = activeOrders.filter(o => o.customer?.id === c.id);
-    const totalDebt = Math.max(0, customerOrders.reduce((sum, o) => {
-      // Debt = Original Total - Paid Amount (Returns are cash payout, don't affect debt)
-      const effectiveTotal = o.type === 'payment' ? 0 : o.total;
-      return sum + (effectiveTotal - o.paid_amount);
-    }, 0));
-    
-    return { 
-      ...c, 
-      totalDebt, 
-      orders: customerOrders.filter(o => o.total - o.paid_amount > 0) // optional: keep only unpaid invoices for reference
-    };
-  }).filter(c => c.totalDebt > 0)
-    .sort((a, b) => b.totalDebt - a.totalDebt);
+  const [customersWithDebt, setCustomersWithDebt] = useState<any[]>([]);
+
+  const loadCustomerDebts = async () => {
+    setDebtLoading(true);
+    try {
+      const { supabase } = await import('../../lib/supabase');
+      const { data: ordersData, error } = await supabase
+        .from('orders')
+        .select('*')
+        .neq('customer_id', null)
+        .eq('is_deleted', false);
+
+      if (error) throw error;
+
+      // Include offline orders that haven't synced yet
+      const offlineOrders = activeOrders.filter(o => o.customer && String(o.id).startsWith('OFF-'));
+      const combinedOrders = [...(ordersData ?? []), ...offlineOrders];
+
+      const debtMap: Record<string, { total: number; orders: any[] }> = {};
+      for (const o of combinedOrders) {
+        // Handle both populated customer object and raw ID
+        const cid = (typeof o.customer_id === 'string' ? o.customer_id : o.customer?.id) as string;
+        if (!cid) continue;
+        if (!debtMap[cid]) debtMap[cid] = { total: 0, orders: [] };
+        const returnedValue = calculateOrderReturnValue(o);
+        const effectiveTotal = o.type === 'payment' ? 0 : (o.total as number) - returnedValue;
+        const debt = effectiveTotal - (o.paid_amount as number);
+        if (debt > 0.009) {
+          debtMap[cid].total += debt;
+          debtMap[cid].orders.push({ ...o, current_debt: debt });
+        } else if (o.type === 'payment' && !(o.notes && o.notes.includes('سداد أجل للفاتورة رقم'))) {
+          // Subtract global payments (debt is negative)
+          debtMap[cid].total += debt;
+        }
+      }
+
+      const result = customers
+        .map(c => ({
+          ...c,
+          totalDebt: Math.max(0, debtMap[c.id]?.total ?? 0),
+          orders: debtMap[c.id]?.orders ?? []
+        }))
+        .filter(c => c.totalDebt > 0.009)
+        .sort((a, b) => b.totalDebt - a.totalDebt);
+
+      setCustomersWithDebt(result);
+    } catch (err) {
+      console.error('Failed to load customer debts:', err);
+      // Fallback للـ store المحلي
+      const fallback = customers.map(c => {
+        const customerOrders = activeOrders.filter(o => o.customer?.id === c.id);
+        const totalDebt = Math.max(0, customerOrders.reduce((sum, o) => {
+          if (o.type === 'payment' && o.notes?.includes('سداد أجل للفاتورة رقم')) {
+            return sum;
+          }
+          const returnedValue = calculateOrderReturnValue(o);
+          const effectiveTotal = o.type === 'payment' ? 0 : o.total - returnedValue;
+          return sum + (effectiveTotal - o.paid_amount);
+        }, 0));
+        return { ...c, totalDebt, orderIds: [], orders: customerOrders.filter(o => o.total - o.paid_amount - calculateOrderReturnValue(o) > 0) };
+      }).filter(c => c.totalDebt > 0).sort((a, b) => b.totalDebt - a.totalDebt);
+      setCustomersWithDebt(fallback);
+    } finally {
+      setDebtLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (customers.length > 0) loadCustomerDebts();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customers, activeOrders.length]);
 
   // --- Suppliers Logic ---
   const filteredSearchSuppliers = suppliers.filter(s => 
@@ -242,22 +301,34 @@ export default function DeferredAccounts() {
       return;
     }
     
-    if (totalPaid > selectedEntity.totalDebt + 1) { // +1 for small rounding issues
+    const maxPayable = selectedInvoice ? selectedInvoice.current_debt : selectedEntity.totalDebt;
+    if (totalPaid > maxPayable + 1) { // +1 for small rounding issues
       alert('المبلغ المدفوع أكبر من إجمالي الدين');
       return;
     }
 
     try {
       if (activeTab === 'customers') {
-        const invoiceId = await checkout(
-          0, 
-          { name: selectedEntity.name, phone: selectedEntity.phone, custom_id: selectedEntity.custom_id }, 
-          totalPaid, 
-          'payment',
-          getPrimaryPaymentMethod(cash, visa, wallet, insta),
-          { cash, visa, wallet, instapay: insta }
-        );
-        alert(`تم تسجيل تحصيل من العميل بنجاح!\nرقم الإيصال: ${invoiceId}`);
+        if (selectedInvoice) {
+           await payInvoiceDebt(
+             selectedInvoice.id,
+             selectedEntity.id,
+             totalPaid,
+             { cash, visa, wallet, instapay: insta },
+             getPrimaryPaymentMethod(cash, visa, wallet, insta)
+           );
+           alert('تم تسجيل سداد للفاتورة بنجاح!');
+        } else {
+           const invoiceId = await checkout(
+             0, 
+             { name: selectedEntity.name, phone: selectedEntity.phone, custom_id: selectedEntity.custom_id }, 
+             totalPaid, 
+             'payment',
+             getPrimaryPaymentMethod(cash, visa, wallet, insta),
+             { cash, visa, wallet, instapay: insta }
+           );
+           alert(`تم تسجيل تحصيل من العميل بنجاح!\nرقم الإيصال: ${invoiceId}`);
+        }
       } else {
         const invoiceNum = `PAY-DEBT-${Date.now()}`;
         await addPurchaseInvoice({
@@ -277,6 +348,7 @@ export default function DeferredAccounts() {
       
       setIsModalOpen(false);
       setSelectedEntity(null);
+      setSelectedInvoice(null);
       setPaymentForm({ cash: '', visa: '', wallet: '', instapay: '' });
     } catch (e: any) {
       alert('حدث خطأ أثناء معالجة الدفعة: ' + e.message);
@@ -303,7 +375,7 @@ export default function DeferredAccounts() {
             </button>
             <button
               onClick={() => setActiveTab('suppliers')}
-              className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${activeTab === 'suppliers' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${activeTab === 'suppliers' ? 'bg-white text-slate-500 hover:text-slate-700' : 'text-slate-500 hover:text-slate-700'}`}
             >
               مستحقات الموردين
             </button>
@@ -317,9 +389,15 @@ export default function DeferredAccounts() {
               <Plus size={18} /> إضافة {activeTab === 'customers' ? 'مديونية عميل سابقة' : 'مستحقات مورد سابقة'}
             </button>
             <div className="flex gap-2">
+              {debtLoading && (
+                <div className="flex items-center gap-2 text-indigo-600 font-bold px-4 py-2 bg-indigo-50 rounded-xl">
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                  <span>جاري تحديث الديون...</span>
+                </div>
+              )}
               <button 
                 onClick={exportExcel}
-                className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg"
+                className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg shadow-emerald-100"
               >
                 <TableIcon size={18} /> Excel
               </button>
@@ -407,10 +485,10 @@ export default function DeferredAccounts() {
       {/* Payment Modal */}
       {isModalOpen && selectedEntity && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
             <div 
               style={{ background: `linear-gradient(160deg, ${storeSettings.themeColor} 0%, ${storeSettings.themeColor}dd 100%)` }}
-              className="p-6 text-white flex justify-between items-center"
+              className="p-6 text-white flex justify-between items-center shrink-0"
             >
               <h2 className="text-xl font-black flex items-center gap-2 drop-shadow">
                 <Banknote /> {activeTab === 'customers' ? 'تحصيل من العميل' : 'سداد للمورد'}
@@ -420,12 +498,46 @@ export default function DeferredAccounts() {
               </button>
             </div>
             
-            <div className="p-6 space-y-5">
-              <div className="flex flex-col items-center bg-slate-50 p-4 rounded-2xl border border-slate-100">
+            <div className="p-6 overflow-y-auto flex-1 space-y-5">
+              <div className="flex flex-col items-center bg-slate-50 p-4 rounded-2xl border border-slate-100 shrink-0">
                 <div className="text-sm font-bold text-slate-500 mb-1">{activeTab === 'customers' ? 'مديونية العميل' : 'مستحقات المورد'}</div>
-                <div className="text-3xl font-black text-red-600">{selectedEntity.totalDebt.toFixed(2)} <span className="text-lg">{storeSettings.currency}</span></div>
+                <div className="text-3xl font-black text-red-600">{selectedInvoice ? selectedInvoice.current_debt.toFixed(2) : selectedEntity.totalDebt.toFixed(2)} <span className="text-lg">{storeSettings.currency}</span></div>
                 <div className="mt-2 text-sm font-semibold">{selectedEntity.name} - <span dir="ltr">{selectedEntity.phone || '—'}</span></div>
               </div>
+
+              {activeTab === 'customers' && selectedEntity.orders?.length > 0 && (
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 shrink-0 flex flex-col max-h-[35vh]">
+                  <div className="text-xs font-bold text-slate-500 mb-3 flex justify-between shrink-0">
+                    <span>الفواتير المستحقة ({selectedEntity.orders.length})</span>
+                    {selectedInvoice && (
+                      <button 
+                        onClick={() => setSelectedInvoice(null)}
+                        className="text-indigo-600 hover:text-indigo-700"
+                      >
+                        سداد كلي
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-2 overflow-y-auto pr-1 flex-1">
+                    {selectedEntity.orders.map((o: any) => (
+                      <div 
+                        key={o.id} 
+                        onClick={() => setSelectedInvoice(o)}
+                        className={`flex justify-between items-center p-3 rounded-xl border cursor-pointer transition ${selectedInvoice?.id === o.id ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-indigo-300'}`}
+                      >
+                        <div>
+                          <div className="font-bold text-sm text-slate-800">فاتورة #{o.id}</div>
+                          <div className="text-xs text-slate-500">{new Date(o.created_at || o.date || new Date()).toLocaleDateString('ar-EG')}</div>
+                        </div>
+                        <div className="text-left">
+                          <div className="font-black text-red-600">{o.current_debt.toFixed(2)} {storeSettings.currency}</div>
+                          {o.notes && <div className="text-[10px] text-slate-400 max-w-[120px] truncate" title={o.notes}>{o.notes}</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2 text-center py-2 bg-indigo-50 rounded-xl mb-2">

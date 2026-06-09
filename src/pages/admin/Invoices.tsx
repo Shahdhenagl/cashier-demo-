@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../../store/useStore';
-import { ArrowRightLeft, Search, User, Printer, CreditCard, FileText, Table as TableIcon, TrendingUp, Calendar, X, Trash2, Archive } from 'lucide-react';
+import { ArrowRightLeft, Search, User, Printer, CreditCard, FileText, Table as TableIcon, TrendingUp, Calendar, X, Trash2, Archive, Edit2, Eye } from 'lucide-react';
 import { normalizeArabic } from '../../utils/textUtils';
 import { calculateInvoiceProfit } from '../../utils/invoiceProfit';
 import { calculateOrderReturnValue } from '../../utils/returns';
@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { EditInvoiceModal } from '../../components/EditInvoiceModal';
 
 export default function Invoices() {
   const { orders, storeSettings, deleteOrder } = useStore();
@@ -19,6 +20,7 @@ export default function Invoices() {
   const [selectedYear, setSelectedYear] = useState<string>(new Date().getFullYear().toString());
   const [selectedCashier, setSelectedCashier] = useState<string>('all');
   const [loading, setLoading] = useState(false);
+  const [editingOrder, setEditingOrder] = useState<any | null>(null);
 
   const activeOrders = useMemo(() => orders.filter((order) => !order.is_deleted), [orders]);
   const deletedOrders = useMemo(() => orders.filter((order) => order.is_deleted), [orders]);
@@ -42,7 +44,14 @@ export default function Invoices() {
       const calcDebt = (upToIndex: number) => sortedOrders.slice(0, upToIndex).reduce((sum, o) => {
         const returnedValue = calculateOrderReturnValue(o);
         const effectiveTotal = o.type === 'payment' ? 0 : (o.total - returnedValue);
-        return sum + (effectiveTotal - o.paid_amount);
+        const debt = effectiveTotal - (o.paid_amount || 0);
+
+        if (debt > 0.009 && o.type !== 'payment') {
+          return sum + debt;
+        } else if (o.type === 'payment' && !(o.notes && o.notes.includes('سداد أجل للفاتورة رقم'))) {
+          return sum + debt;
+        }
+        return sum;
       }, 0);
 
       debtBefore = calcDebt(currentIndex);
@@ -51,9 +60,10 @@ export default function Invoices() {
 
     let itemsHtml = '';
     if (isPayment) {
+      const paymentDesc = order.notes ? order.notes : 'سداد مديونية سابقة';
       itemsHtml = `<tr>
         <td style="text-align:center">1</td>
-        <td colspan="3" style="padding:12px 4px;border-bottom:1px dashed #ddd;font-size:14px;font-weight:bold;text-align:right;">سداد مديونية سابقة</td>
+        <td colspan="3" style="padding:12px 4px;border-bottom:1px dashed #ddd;font-size:12px;font-weight:bold;text-align:right;">${paymentDesc}</td>
         <td style="padding:12px 4px;border-bottom:1px dashed #ddd;text-align:left;font-size:14px;font-weight:bold;">${order.paid_amount.toFixed(2)}</td>
       </tr>`;
     } else {
@@ -206,6 +216,12 @@ export default function Invoices() {
         </div>
       ` : !isPayment ? `
         <div class="payment-status status-paid" style="margin-top:10px;">✓ تم سداد الفاتورة بالكامل</div>
+      ` : ''}
+
+      ${order.notes && !isPayment ? `
+        <div style="margin-top:10px; padding:10px; background:#fef3c7; border-radius:8px; border:1px dashed #f59e0b; font-size:12px; color:#92400e;">
+          <strong>ملاحظات / سبب الأجل:</strong> ${order.notes}
+        </div>
       ` : ''}
     </div>
 
@@ -560,6 +576,9 @@ export default function Invoices() {
                             {(() => {
                               const cDebt = activeOrders.filter(o => o.customer?.id === order.customer!.id)
                                 .reduce((sum, o) => {
+                                  if (o.type === 'payment' && o.notes?.includes('سداد أجل للفاتورة رقم')) {
+                                    return sum;
+                                  }
                                   const eTotal = o.type === 'payment' ? 0 : o.total;
                                   return sum + (eTotal - o.paid_amount);
                                 }, 0);
@@ -632,6 +651,13 @@ export default function Invoices() {
                       </td>
                       <td className="p-4 text-center">
                         <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => window.open(`/view-invoice/${order.id}`, '_blank')}
+                            className="p-2 rounded-lg bg-slate-50 text-slate-600 hover:bg-slate-200 transition-all shadow-sm border border-slate-100"
+                            title="عرض تفاصيل الفاتورة"
+                          >
+                            <Eye size={18} />
+                          </button>
                           <button 
                             onClick={() => handlePrint(order)}
                             style={{ backgroundColor: storeSettings.themeColor + '10', color: storeSettings.themeColor }}
@@ -640,6 +666,15 @@ export default function Invoices() {
                           >
                             <Printer size={18} />
                           </button>
+                          {!order.is_deleted && order.type === 'sale' && !String(order.id).startsWith('OFF-') && (
+                            <button
+                              onClick={() => setEditingOrder(order)}
+                              className="p-2 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-all shadow-sm border border-indigo-100"
+                              title="تعديل الفاتورة"
+                            >
+                              <Edit2 size={18} />
+                            </button>
+                          )}
                           {!order.is_deleted && (
                             <button
                               onClick={() => handleDeleteOrder(order)}
@@ -659,6 +694,12 @@ export default function Invoices() {
           </table>
         </div>
       </div>
+      {editingOrder && (
+        <EditInvoiceModal
+          invoice={editingOrder}
+          onClose={() => setEditingOrder(null)}
+        />
+      )}
     </div>
   );
 }

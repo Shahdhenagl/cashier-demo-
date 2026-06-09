@@ -53,13 +53,18 @@ export default function Customers() {
       if (o.type === 'payment') return sum;
       return sum + o.items.reduce((itemSum, item) => {
         const netQty = item.quantity - item.returned_quantity;
-        return itemSum + (item.sale_price - item.purchase_price) * netQty;
+        return itemSum + (item.sale_price - (item.average_purchase_price ?? item.purchase_price)) * netQty;
       }, 0);
     }, 0);
 
-    // Debt = Original Total - Paid Amount (Returns are cash payout, don't affect debt)
+    // Debt = Original Total - Returned Value - Paid Amount
     const totalDebt = Math.max(0, activeCustomerOrders.reduce((sum, o) => {
-      const effectiveTotal = o.type === 'payment' ? 0 : o.total;
+      // Ignore specific payments that already reduced original invoice's debt
+      if (o.type === 'payment' && o.notes?.includes('سداد أجل للفاتورة رقم')) {
+        return sum;
+      }
+      const returnedValue = calculateOrderReturnValue(o);
+      const effectiveTotal = o.type === 'payment' ? 0 : o.total - returnedValue;
       return sum + (effectiveTotal - o.paid_amount);
     }, 0));
 

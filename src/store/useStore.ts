@@ -92,6 +92,7 @@ export interface Order {
   is_deleted?: boolean;
   deleted_at?: string | null;
   deletion_reason?: string | null;
+  notes?: string | null;
 }
 
 export interface Expense {
@@ -249,10 +250,20 @@ interface CashierStore {
     type?: 'sale' | 'payment' | 'previous_debt', 
     paymentMethod?: string,
     splitPayments?: { cash: number; visa: number; wallet: number; instapay: number },
-    cashierName?: string
+    cashierName?: string,
+    notes?: string
   ) => Promise<string>;
+  payInvoiceDebt: (
+    invoiceId: string, 
+    customerId: string, 
+    amount: number, 
+    splitPayments?: { cash: number; visa: number; wallet: number; instapay: number },
+    paymentMethod?: string
+  ) => Promise<void>;
   processReturn: (orderId: string, returns: { productId: string, returnQty: number, refundAmount: number }[]) => Promise<boolean>;
   deleteOrder: (orderId: string, reason?: string) => Promise<boolean>;
+  editOrder: (orderId: string, updatedData: Partial<Order>, updatedItems: OrderItem[], reason: string) => Promise<boolean>;
+
 
   // Admin
   loadAnalyticsData: (startDate?: string, endDate?: string) => Promise<Order[]>;
@@ -855,7 +866,7 @@ export const useStore = create<CashierStore>((set, get) => ({
   clearCart: () => set({ cart: [] }),
 
   // ── Checkout ───────────────────────────────────────────────
-  checkout: async (total, customerDetails, paidAmount = total, type = 'sale', paymentMethod = 'cash', splitPayments, cashierName) => {
+  checkout: async (total, customerDetails, paidAmount = total, type = 'sale', paymentMethod = 'cash', splitPayments, cashierName, notes) => {
     const state = get();
     const finalCashierName = cashierName || state.activeCashier?.name || 'مدير النظام';
     if (state.cart.length === 0 && type !== 'payment' && type !== 'previous_debt') return state.activeInvoiceId;
@@ -904,6 +915,7 @@ export const useStore = create<CashierStore>((set, get) => ({
         date: new Date().toISOString(),
         customer: finalCustomer,
         cashier_name: finalCashierName,
+        notes: notes || null,
         items: state.cart.map((i) => ({ ...i })),
         isOffline: true
       };
@@ -1016,7 +1028,8 @@ export const useStore = create<CashierStore>((set, get) => ({
         type,
         customer_id: customerId,
         payment_method: paymentMethod,
-        cashier_name: finalCashierName
+        cashier_name: finalCashierName,
+        notes: notes || null
       });
 
       if (orderError) {
@@ -1062,7 +1075,8 @@ export const useStore = create<CashierStore>((set, get) => ({
         payment_method: paymentMethod as any,
         date: new Date().toISOString(),
         customer: finalCustomer,
-        cashier_name: finalCashierName
+        cashier_name: finalCashierName,
+        notes: notes || null
       };
 
       const updatedProducts = state.products.map((p) => {
@@ -1111,6 +1125,72 @@ export const useStore = create<CashierStore>((set, get) => ({
   },
 
   // ── Returns ────────────────────────────────────────────────
+  payInvoiceDebt: async (invoiceId, customerId, amount, splitPayments, paymentMethod = 'cash') => {
+    const state = get();
+    const invoice = state.orders.find(o => o.id === invoiceId);
+    if (!invoice) return;
+
+    try {
+      const { supabase } = await import('../lib/supabase');
+      
+      // 1. Update the original invoice
+      const newPaidAmount = (invoice.paid_amount || 0) + amount;
+      const { error: updateError } = await supabase
+        .from('orders')
+        .update({ paid_amount: newPaidAmount })
+        .eq('id', invoiceId);
+        
+      if (updateError) throw updateError;
+
+      // 2. Insert a payment transaction
+      const paymentId = `PAY-${Date.now()}`;
+      const cashierName = state.activeCashier?.name || 'مدير النظام';
+      const remainingDebt = invoice.total - newPaidAmount;
+      const debtBefore = remainingDebt + amount;
+      const note = `سداد أجل للفاتورة رقم #${invoiceId} | المديونية قبل: ${debtBefore.toFixed(2)} | المتبقي: ${remainingDebt.toFixed(2)}`;
+
+      const paymentOrder = {
+        id: paymentId,
+        total: 0,
+        paid_amount: amount,
+        paid_cash: splitPayments ? (splitPayments.cash || 0) : (paymentMethod === 'cash' ? amount : 0),
+        paid_visa: splitPayments ? (splitPayments.visa || 0) : (paymentMethod === 'visa' ? amount : 0),
+        paid_wallet: splitPayments ? (splitPayments.wallet || 0) : (paymentMethod === 'wallet' ? amount : 0),
+        paid_instapay: splitPayments ? (splitPayments.instapay || 0) : (paymentMethod === 'instapay' ? amount : 0),
+        type: 'payment',
+        customer_id: customerId,
+        payment_method: paymentMethod,
+        cashier_name: cashierName,
+        notes: note
+      };
+
+      const { error: insertError } = await supabase.from('orders').insert(paymentOrder);
+      if (insertError) throw insertError;
+
+      // Update local state
+      const customer = state.customers.find(c => c.id === customerId);
+      const newPaymentOrderObj: Order = {
+        ...paymentOrder,
+        items: [],
+        type: 'payment',
+        date: new Date().toISOString(),
+        customer: customer,
+        payment_method: paymentMethod as any
+      };
+
+      set({
+        orders: [
+          newPaymentOrderObj,
+          ...state.orders.map(o => o.id === invoiceId ? { ...o, paid_amount: newPaidAmount } : o)
+        ]
+      });
+
+    } catch (err) {
+      console.error("Failed to pay invoice debt:", err);
+      alert("حدث خطأ أثناء سداد المديونية.");
+    }
+  },
+
   processReturn: async (orderId, returns) => {
     const state = get();
     const orderIndex = state.orders.findIndex((o) => o.id === orderId);
@@ -1354,6 +1434,146 @@ export const useStore = create<CashierStore>((set, get) => ({
       return false;
     }
   },
+
+  editOrder: async (orderId, updatedData, updatedItems, reason) => {
+    const state = get();
+    const order = state.orders.find((o) => o.id === orderId);
+    if (!order || order.is_deleted || order.isOffline) return false;
+
+    const oldTotal = order.total;
+    const oldPaid = order.paid_amount;
+
+    try {
+      // Calculate stock adjustments
+      const stockAdjustments = new Map<string, number>();
+      
+      // Add back old quantities
+      for (const item of order.items) {
+        stockAdjustments.set(item.id, (stockAdjustments.get(item.id) || 0) + item.quantity);
+      }
+      
+      // Subtract new quantities
+      for (const item of updatedItems) {
+        stockAdjustments.set(item.id, (stockAdjustments.get(item.id) || 0) - item.quantity);
+      }
+
+      const updatedProducts = [...state.products];
+      
+      // Apply stock adjustments to Supabase and local store
+      for (const [productId, delta] of Array.from(stockAdjustments.entries())) {
+        if (delta === 0) continue;
+        
+        const productIndex = updatedProducts.findIndex((p) => p.id === productId);
+        const localStock = productIndex >= 0 ? updatedProducts[productIndex].stock_quantity : 0;
+
+        const { data: prodData } = await supabase
+          .from('products')
+          .select('stock_quantity')
+          .eq('id', productId)
+          .maybeSingle();
+
+        const dbStock = (prodData?.stock_quantity ?? localStock) as number;
+        const newStock = dbStock + delta;
+        
+        const { error: productError } = await supabase
+          .from('products')
+          .update({ stock_quantity: Math.max(0, newStock) })
+          .eq('id', productId);
+
+        if (productError) throw productError;
+
+        if (productIndex >= 0) {
+          updatedProducts[productIndex] = {
+            ...updatedProducts[productIndex],
+            stock_quantity: Math.max(0, localStock + delta),
+          };
+        }
+      }
+
+      // Update order in Supabase
+      const newOrderData = {
+        total: updatedData.total ?? order.total,
+        paid_amount: updatedData.paid_amount ?? order.paid_amount,
+        paid_cash: updatedData.paid_cash ?? order.paid_cash,
+        paid_visa: updatedData.paid_visa ?? order.paid_visa,
+        paid_wallet: updatedData.paid_wallet ?? order.paid_wallet,
+        paid_instapay: updatedData.paid_instapay ?? order.paid_instapay,
+        payment_method: updatedData.payment_method ?? order.payment_method,
+      };
+
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update(newOrderData)
+        .eq('id', orderId);
+
+      if (orderError) throw orderError;
+
+      // Update order items in Supabase
+      // First delete old items
+      const { error: deleteItemsError } = await supabase
+        .from('order_items')
+        .delete()
+        .eq('order_id', orderId);
+
+      if (deleteItemsError) throw deleteItemsError;
+
+      // Then insert new items
+      const itemsPayload = updatedItems.map((item) => ({
+        order_id: orderId,
+        product_id: item.id,
+        product_name: item.name,
+        barcode: item.barcode,
+        quantity: item.quantity,
+        returned_quantity: item.returned_quantity || 0,
+        sale_price: item.sale_price,
+        purchase_price: item.average_purchase_price || item.purchase_price,
+      }));
+
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(itemsPayload);
+
+      if (itemsError) throw itemsError;
+
+      // Update local state
+      const finalOrder = { ...order, ...newOrderData, items: updatedItems };
+      set({
+        orders: state.orders.map((o) => (o.id === orderId ? finalOrder : o)),
+        products: updatedProducts,
+      });
+
+      new BroadcastChannel('cashier-sync').postMessage('sync_products');
+      new BroadcastChannel('cashier-sync').postMessage('sync_orders');
+
+      sendTelegramAlert({
+        type: 'edit_invoice',
+        actor: getActorName(state),
+        currency: state.storeSettings.currency,
+        invoiceId: orderId,
+        invoiceUrl: getPublicInvoiceUrl(orderId),
+        customer: order.customer?.name || 'عميل نقدي',
+        date: new Date().toISOString(),
+        items: updatedItems.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          sale_price: item.sale_price,
+        })),
+        editDetails: {
+          oldTotal,
+          newTotal: updatedData.total,
+          oldPaid,
+          newPaid: updatedData.paid_amount,
+          notes: reason
+        }
+      });
+
+      return true;
+    } catch (err) {
+      console.error("Edit Order Error:", err);
+      return false;
+    }
+  },
+
 
   syncOfflineReturnsQueue: async () => {
     const state = get();

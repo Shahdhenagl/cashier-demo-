@@ -62,7 +62,7 @@ export default function PublicInvoice() {
             
             if (allCustOrders) {
               debtBefore = allCustOrders.reduce((sum: number, ord: any) => {
-                if (ord.id === o.id) return sum;
+                if (ord.id === o.id) return sum; 
                 if (ord.type === 'payment') return sum - ord.paid_amount;
                 if (ord.type === 'return') return sum;
                 return sum + (ord.total - ord.paid_amount);
@@ -374,6 +374,13 @@ export default function PublicInvoice() {
                 )}
               </div>
             </div>
+
+            {order.notes && order.type !== 'payment' && (
+              <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 shadow-sm space-y-2 mt-4">
+                <div className="text-[10px] font-black text-amber-600 uppercase tracking-widest text-center border-b border-amber-100 pb-2 mb-2">ملاحظات الفاتورة</div>
+                <div className="text-sm font-bold text-amber-900 text-center">{order.notes}</div>
+              </div>
+            )}
 
             {/* Payment Details Card */}
             <div className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm space-y-2">

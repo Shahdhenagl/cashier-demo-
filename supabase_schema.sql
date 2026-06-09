@@ -72,6 +72,11 @@ create table if not exists purchase_invoices (
   supplier_id uuid references suppliers(id) on delete set null,
   total numeric not null default 0,
   paid_amount numeric default 0,
+  paid_cash numeric default 0,
+  paid_visa numeric default 0,
+  paid_wallet numeric default 0,
+  paid_instapay numeric default 0,
+  payment_method text default 'cash',
   created_at timestamptz default now()
 );
 
@@ -89,11 +94,17 @@ create table if not exists orders (
   id text primary key,
   total numeric not null default 0,
   paid_amount numeric default 0,
+  paid_cash numeric default 0,
+  paid_visa numeric default 0,
+  paid_wallet numeric default 0,
+  paid_instapay numeric default 0,
+  payment_method text default 'cash',
   type text default 'sale',
   customer_id uuid references customers(id) on delete set null,
   is_deleted boolean not null default false,
   deleted_at timestamptz,
   deletion_reason text,
+  notes text,
   created_at timestamptz default now()
 );
 

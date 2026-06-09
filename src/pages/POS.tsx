@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store/useStore';
-import { ShoppingCart, Search, Plus, Minus, Trash2, Banknote, RefreshCcw, Moon, Sun, ArrowRightLeft, X, Printer, CreditCard, Smartphone, Zap, ScanLine, Camera, Box, Check, ChevronRight, ChevronLeft } from 'lucide-react';
+import { ShoppingCart, Search, Plus, Minus, Trash2, Banknote, RefreshCcw, Moon, Sun, ArrowRightLeft, X, Printer, CreditCard, Smartphone, Zap, ScanLine, Camera, Box, Check, ChevronRight, ChevronLeft, FileText, MessageSquare, Send } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { normalizeArabic } from '../utils/textUtils';
 
@@ -100,6 +100,7 @@ export default function POS() {
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [paidCash, setPaidCash] = useState('');
+  const [deferredNote, setDeferredNote] = useState('');
   const [paidVisa, setPaidVisa] = useState('');
   const [paidWallet, setPaidWallet] = useState('');
   const [paidInstapay, setPaidInstapay] = useState('');
@@ -110,7 +111,7 @@ export default function POS() {
   const [showReturnsModal, setShowReturnsModal] = useState(false);
   const [returnSearchQuery, setReturnSearchQuery] = useState('');
   const [activeReturnOrder, setActiveReturnOrder] = useState<any>(null);
-  const [pendingReturns, setPendingReturns] = useState<Record<string, { returnQty: number, refundAmount: number }>>({});
+  const [pendingReturns, setPendingReturns] = useState<Record<string, { returnQty: number, refundAmount: number, returnType?: 'debt' | 'cash' }>>({});
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [lastInvoiceId, setLastInvoiceId] = useState('');
   const [lastCustomerInfo, setLastCustomerInfo] = useState<any>(null);
@@ -118,6 +119,34 @@ export default function POS() {
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const [shouldPrint, setShouldPrint] = useState(false);
+  const [showNoteModal, setShowNoteModal] = useState(false);
+  const [noteText, setNoteText] = useState('');
+  const [isSendingNote, setIsSendingNote] = useState(false);
+
+  const handleSendNote = async () => {
+    if (!noteText.trim()) return;
+    setIsSendingNote(true);
+    try {
+      await fetch('/api/telegram-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'custom_note',
+          actor: activeCashier?.name || 'كاشير',
+          date: new Date().toISOString(),
+          noteText: noteText.trim()
+        })
+      });
+      alert('تم إرسال الرسالة بنجاح للمدير');
+      setShowNoteModal(false);
+      setNoteText('');
+    } catch (error) {
+      console.error('Error sending note:', error);
+      alert('فشل في إرسال الرسالة');
+    } finally {
+      setIsSendingNote(false);
+    }
+  };
 
   // Camera Scanner Logic
   useEffect(() => {
@@ -129,7 +158,7 @@ export default function POS() {
       scanner.start(
         { facingMode: "environment" },
         { fps: 10, qrbox: { width: 250, height: 250 } },
-        (decodedText) => {
+        (decodedText: string) => {
           if (scanner && scanner.getState() === 2) { // 2 = SCANNING
             scanner.pause();
           }
@@ -146,10 +175,10 @@ export default function POS() {
             }
           }
         },
-        (_error) => {
+        (_error: any) => {
           // ignore continuous scan errors
         }
-      ).catch((err) => {
+      ).catch((err: any) => {
         console.error(err);
         alert('حدث خطأ في تشغيل الكاميرا، تأكد من إعطاء الصلاحيات.');
         setShowCameraScanner(false);
@@ -466,8 +495,12 @@ export default function POS() {
     };
 
     const isAllEmpty = !paidCash && !paidVisa && !paidWallet && !paidInstapay;
-    const effectivePaidAmount = isAllEmpty ? currentTotal : (finalPaidAmount - change);
-    const finalSplit = isAllEmpty ? { ...adjustedSplit, cash: currentTotal } : adjustedSplit;
+
+    // لو ما دخلتش أي مبلغ → الفاتورة كلها آجل (0 مدفوع)
+    const effectivePaidAmount = isAllEmpty ? 0 : (finalPaidAmount - change);
+    const finalSplit = isAllEmpty
+      ? { cash: 0, visa: 0, wallet: 0, instapay: 0 }
+      : adjustedSplit;
     
     const methods = [
       { name: 'cash', amount: finalSplit.cash },
@@ -475,14 +508,28 @@ export default function POS() {
       { name: 'wallet', amount: finalSplit.wallet },
       { name: 'instapay', amount: finalSplit.instapay }
     ];
-    const primaryMethod = methods.sort((a, b) => b.amount - a.amount)[0].name;
+    // لو كلها صفر (آجل كامل) → الطريقة الافتراضية cash
+    const primaryMethod = isAllEmpty ? 'cash' : methods.sort((a, b) => b.amount - a.amount)[0].name;
 
-    if (effectivePaidAmount < currentTotal && (!currentCustomerName.trim() || !currentCustomerPhone.trim())) {
-      alert("عذراً، يجب تسجيل اسم ورقم هاتف العميل بالكامل (الاسم والموبايل) في حالة البيع بالآجل لحفظ المديونية.");
-      return;
+    // ── Validate credit (آجل) sales ──────────────────────────────────────────
+    if (effectivePaidAmount < currentTotal) {
+      // لازم يكون عنده اسم + هاتف
+      if (!currentCustomerName.trim() || !currentCustomerPhone.trim()) {
+        alert("⚠️ برجاء تسجيل العميل أولاً\n\nلا يمكن إتمام البيع بالآجل بدون تحديد بيانات العميل كاملة (الاسم ورقم الهاتف).\nيرجى اختيار العميل من القائمة أو إضافته في صفحة العملاء.");
+        return;
+      }
+      // لازم يكون العميل مسجل في قاعدة البيانات (مش مجرد كتابة اسم)
+      const registeredCustomer = customers.find(c =>
+        (currentCustomerPhone && c.phone === currentCustomerPhone) ||
+        (currentCustomId && c.custom_id === currentCustomId)
+      );
+      if (!registeredCustomer) {
+        alert("⚠️ العميل غير مسجل في النظام\n\nلتسجيل المديونية بشكل صحيح يجب أن يكون العميل مسجلاً في قاعدة البيانات.\nبرجاء:\n1. اختيار العميل من قائمة الاقتراحات عند الكتابة، أو\n2. إضافة العميل أولاً من صفحة إدارة العملاء.");
+        return;
+      }
     }
 
-    const invoiceId = await checkout(currentTotal, { name: currentCustomerName, phone: currentCustomerPhone, custom_id: currentCustomId }, effectivePaidAmount, 'sale', primaryMethod, finalSplit);
+    const invoiceId = await checkout(currentTotal, { name: currentCustomerName, phone: currentCustomerPhone, custom_id: currentCustomId }, effectivePaidAmount, 'sale', primaryMethod, finalSplit, undefined, deferredNote);
 
     const details: any = {
       cart: currentCart,
@@ -510,6 +557,7 @@ export default function POS() {
     setLastInvoiceId(invoiceId);
     setLastCustomerInfo({ name: currentCustomerName, phone: currentCustomerPhone });
     setLastOrderDetails(details);
+    playSuccessSound();
     setShowSuccessModal(true);
 
     if (shouldPrint) {
@@ -584,12 +632,16 @@ export default function POS() {
     );
 
     if (existingCust) {
-      const cOrders = orders.filter(o => o.customer?.id === existingCust.id);
+      const cOrders = orders.filter(o => o.customer?.id === existingCust.id && !o.is_deleted);
       const cDebt = cOrders.reduce((sum, o) => {
-        // Returns are refunded in cash — they do NOT reduce the customer's debt.
-        // Debt = original invoice total - amount paid (only)
-        const effectiveTotal = o.type === 'payment' ? 0 : o.total;
-        return sum + (effectiveTotal - o.paid_amount);
+        const debt = (o.type === 'payment' ? 0 : (o.total || 0)) - (o.paid_amount || 0);
+        
+        if (debt > 0.009 && o.type !== 'payment') {
+          return sum + debt;
+        } else if (o.type === 'payment' && !(o.notes && o.notes.includes('سداد أجل للفاتورة رقم'))) {
+          return sum + debt;
+        }
+        return sum;
       }, 0);
       setCustomerDebt(cDebt > 0 ? cDebt : 0);
     } else {
@@ -730,6 +782,36 @@ export default function POS() {
         </div>
       )}
 
+      {showNoteModal && (
+        <div className="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700">
+            <div className="p-6 bg-gradient-to-r from-blue-500 to-indigo-500 text-white flex justify-between items-center">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <MessageSquare size={24} /> إرسال رسالة للمدير
+              </h2>
+              <button onClick={() => setShowNoteModal(false)} className="hover:bg-white/20 p-2 rounded-full transition">
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 flex flex-col gap-4">
+              <textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                placeholder="اكتب رسالتك هنا وسيتم إرسالها فوراً للمدير عبر تليجرام..."
+                className="w-full h-32 bg-gray-100 dark:bg-slate-700 dark:text-white border-none rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-bold placeholder-gray-400"
+              />
+              <button
+                onClick={handleSendNote}
+                disabled={!noteText.trim() || isSendingNote}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isSendingNote ? 'جاري الإرسال...' : <><Send size={20} /> إرسال الآن</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showReturnsModal && (
         <div className="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm flex items-start md:items-center justify-center p-4 pt-8 md:pt-4 pb-20 md:pb-4">
           <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col border border-gray-200 dark:border-slate-700">
@@ -828,7 +910,8 @@ export default function POS() {
                         {activeReturnOrder.items.map((item: any) => {
                           const available = item.quantity - item.returned_quantity;
                           const effectivePrice = item.sale_price * discountRatio;
-                          const pr = pendingReturns[item.id] || { returnQty: 0, refundAmount: 0 };
+                          const pr = pendingReturns[item.id] || { returnQty: 0, refundAmount: 0, returnType: 'cash' };
+                          const isDeferred = activeReturnOrder.paid_amount < activeReturnOrder.total;
                           
                           return (
                             <div key={item.id} className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-white dark:bg-slate-800 border border-gray-100 dark:border-slate-600 rounded-xl shadow-sm hover:shadow-md transition-shadow gap-4">
@@ -857,7 +940,8 @@ export default function POS() {
                                         ...prev,
                                         [item.id]: {
                                           returnQty: qty,
-                                          refundAmount: qty * effectivePrice
+                                          refundAmount: prev[item.id]?.returnType === 'debt' ? 0 : qty * effectivePrice,
+                                          returnType: prev[item.id]?.returnType || 'cash'
                                         }
                                       }));
                                     }}
@@ -866,6 +950,18 @@ export default function POS() {
                                     disabled={available === 0}
                                   />
                                 </div>
+                                {isDeferred && (
+                                  <div className="flex flex-col gap-2 w-full md:w-32 justify-center">
+                                    <label className="flex items-center gap-1 text-[11px] font-bold cursor-pointer hover:bg-slate-50 p-1 rounded">
+                                      <input type="radio" checked={pr.returnType !== 'debt'} onChange={() => setPendingReturns(prev => ({ ...prev, [item.id]: { ...prev[item.id], returnType: 'cash', refundAmount: pr.returnQty * effectivePrice } }))} className="accent-indigo-600" />
+                                      إرجاع كاش
+                                    </label>
+                                    <label className="flex items-center gap-1 text-[11px] font-bold text-indigo-600 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                                      <input type="radio" checked={pr.returnType === 'debt'} onChange={() => setPendingReturns(prev => ({ ...prev, [item.id]: { ...prev[item.id], returnType: 'debt', refundAmount: 0 } }))} className="accent-indigo-600" />
+                                      خصم من المديونية
+                                    </label>
+                                  </div>
+                                )}
                                 <div className="flex flex-col gap-1 w-32">
                                   <label className="text-[10px] font-bold text-slate-500">المبلغ المردود ({storeSettings.currency})</label>
                                   <input 
@@ -908,10 +1004,19 @@ export default function POS() {
         <header className="flex flex-col p-3 md:p-5 gap-4 border-b border-gray-100 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md">
           {/* Top Row: Avatar (Right), Text (Center), Dark Mode (Left) */}
           <div className="flex justify-between items-start w-full">
-            {/* Right: Avatar */}
-            <div className="relative group cursor-pointer shrink-0" onClick={() => { if (confirm('هل تريد تسجيل الخروج؟')) { logoutPOS(); navigate('/pos-login'); } }}>
-              <img src={activeCashier?.photo_url || storeSettings.logo} alt="Logo" className="w-12 h-12 object-cover rounded-xl shadow-md border border-gray-100 dark:border-slate-700 bg-white p-0.5 group-hover:scale-110 transition-transform" />
-              <div className="absolute -bottom-1 -right-1 bg-green-500 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900"></div>
+            {/* Right: Avatar and Message */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="relative group cursor-pointer" onClick={() => { if (confirm('هل تريد تسجيل الخروج؟')) { logoutPOS(); navigate('/pos-login'); } }}>
+                <img src={activeCashier?.photo_url || storeSettings.logo} alt="Logo" className="w-12 h-12 object-cover rounded-xl shadow-md border border-gray-100 dark:border-slate-700 bg-white p-0.5 group-hover:scale-110 transition-transform" />
+                <div className="absolute -bottom-1 -right-1 bg-green-500 w-4 h-4 rounded-full border-2 border-white dark:border-slate-900"></div>
+              </div>
+              <button 
+                onClick={() => setShowNoteModal(true)}
+                className="w-12 h-12 flex items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors shadow-sm border border-blue-100 dark:border-blue-800/50"
+                title="إرسال رسالة للمدير"
+              >
+                <MessageSquare size={20} />
+              </button>
             </div>
 
             {/* Center: Text & Badges */}
@@ -1356,6 +1461,22 @@ export default function POS() {
                   </div>
                 </div>
               </div>
+
+              {/* Deferred Note Input */}
+              {Math.max(0, total - (parseFloat(paidCash || '0') + parseFloat(paidVisa || '0') + parseFloat(paidWallet || '0') + parseFloat(paidInstapay || '0'))) > 0 && (
+                <div className="mt-4">
+                  <label className="text-sm font-bold text-slate-600 dark:text-slate-300 block mb-2 flex items-center gap-2">
+                    <FileText size={16} />
+                    ملاحظة / سبب الآجل (اختياري)
+                  </label>
+                  <textarea
+                    value={deferredNote}
+                    onChange={(e) => setDeferredNote(e.target.value)}
+                    placeholder="مثال: باقي الحساب سيتم دفعه الأسبوع القادم..."
+                    className="w-full bg-slate-50 dark:bg-slate-900 border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 rounded-xl p-3 outline-none text-sm font-medium resize-none min-h-[80px]"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="p-6 bg-slate-50 dark:bg-slate-900/50 flex gap-3">
