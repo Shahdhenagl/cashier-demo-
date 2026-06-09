@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Package, Settings, LogOut, FileText, Users, BookUser, BarChart3, Wallet, Activity, MessageCircle, Landmark } from 'lucide-react';
+import { LayoutDashboard, Package, Settings, LogOut, FileText, Users, BookUser, BarChart3, Wallet, Activity, MessageCircle, Landmark, ClipboardList } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 
 export default function AdminLayout() {
@@ -10,6 +10,7 @@ export default function AdminLayout() {
     { name: 'نظرة عامة', path: '/admin/overview', icon: LayoutDashboard },
     { name: 'التحليلات والتقارير', path: '/admin/analytics', icon: BarChart3 },
     { name: 'المخزون والمنتجات', path: '/admin/inventory', icon: Package },
+    { name: 'النواقص والمقترحات', path: '/admin/needs', icon: ClipboardList },
     { name: 'الفواتير والمرتجعات', path: '/admin/invoices', icon: FileText },
     { name: 'قاعدة العملاء', path: '/admin/customers', icon: Users },
     { name: 'حملات واتساب', path: '/admin/whatsapp-campaigns', icon: MessageCircle },

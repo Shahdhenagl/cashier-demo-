@@ -206,6 +206,22 @@ export interface EmployeeLeave {
   created_at: string;
 }
 
+export interface ProductSuggestion {
+  id: string;
+  name: string;
+  notes: string;
+  is_purchased: boolean;
+  created_at: string;
+}
+
+export interface AccountantNote {
+  id: string;
+  note: string;
+  created_at: string;
+  created_by?: string;
+  is_read: boolean;
+}
+
 // ─── Store Interface ──────────────────────────────────────────
 interface CashierStore {
   storeSettings: StoreSettings;
@@ -229,6 +245,8 @@ interface CashierStore {
   employees: Employee[];
   employeeTransactions: EmployeeTransaction[];
   employeeLeaves: EmployeeLeave[];
+  productSuggestions: ProductSuggestion[];
+  accountantNotes: AccountantNote[];
 
   // Data loading
   loadAll: () => Promise<void>;
@@ -311,6 +329,16 @@ interface CashierStore {
   addEmployeeLeave: (leave: Omit<EmployeeLeave, 'id' | 'created_at'>) => Promise<void>;
   updateEmployeeLeave: (id: string, leave: Partial<Omit<EmployeeLeave, 'id' | 'created_at'>>) => Promise<void>;
   deleteEmployeeLeave: (id: string) => Promise<void>;
+
+  // Needs & Suggestions
+  addProductSuggestion: (suggestion: Omit<ProductSuggestion, 'id' | 'created_at' | 'is_purchased'>) => Promise<void>;
+  markProductSuggestionPurchased: (id: string) => Promise<void>;
+  deleteProductSuggestion: (id: string) => Promise<void>;
+  
+  // Accountant Notes
+  addAccountantNote: (note: Omit<AccountantNote, 'id' | 'created_at' | 'is_read'>) => Promise<void>;
+  markAccountantNoteRead: (id: string) => Promise<void>;
+  deleteAccountantNote: (id: string) => Promise<void>;
 
   // Purchases
   loadPurchaseInvoices: () => Promise<void>;
@@ -463,6 +491,8 @@ export const useStore = create<CashierStore>((set, get) => ({
   employees: [],
   employeeTransactions: [],
   employeeLeaves: [],
+  productSuggestions: [],
+  accountantNotes: [],
   invoiceCounter: 1,
   activeInvoiceId: '1',
   isLoading: false,
@@ -511,27 +541,28 @@ export const useStore = create<CashierStore>((set, get) => ({
   loadAll: async () => {
     set({ isLoading: true, dbError: null });
     try {
-      const [settingsRes, categoriesRes, productsRes, customersRes, ordersRes, counterRes, cashiersRes, employeesRes, employeeTransactionsRes, employeeLeavesRes] =
-        await Promise.all([
-          supabase.from('store_settings').select('*').limit(1).maybeSingle(),
-          supabase.from('categories').select('*').order('name'),
-          supabase.from('products').select('*').order('name'),
-          supabase.from('customers').select('*').order('created_at', { ascending: false }),
-          supabase
-            .from('orders')
-            .select('*, customers(*), order_items(*, products(*))')
-            .order('created_at', { ascending: false })
-            .limit(1000),
-          supabase.from('invoice_counter').select('current_value').limit(1).maybeSingle(),
-          supabase.from('cashiers').select('*').order('created_at', { ascending: false }),
-          supabase.from('employees').select('*').order('created_at', { ascending: false }),
-          supabase.from('employee_transactions').select('*').order('created_at', { ascending: false }),
-          supabase.from('employee_leaves').select('*').order('created_at', { ascending: false }),
-        ]);
+      const responses = await Promise.all([
+        supabase.from('store_settings').select('*').limit(1).maybeSingle(),
+        supabase.from('categories').select('*').order('name'),
+        supabase.from('products').select('*').order('name'),
+        supabase.from('customers').select('*').order('created_at', { ascending: false }),
+        supabase
+          .from('orders')
+          .select('*, customers(*), order_items(*, products(*))')
+          .order('created_at', { ascending: false })
+          .limit(1000),
+        supabase.from('invoice_counter').select('current_value').limit(1).maybeSingle(),
+        supabase.from('cashiers').select('*').order('created_at', { ascending: false }),
+        supabase.from('employees').select('*').order('created_at', { ascending: false }),
+        supabase.from('employee_transactions').select('*').order('created_at', { ascending: false }),
+        supabase.from('employee_leaves').select('*').order('created_at', { ascending: false }),
+        supabase.from('product_suggestions').select('*').order('created_at', { ascending: false }),
+        supabase.from('accountant_notes').select('*').order('created_at', { ascending: false }),
+      ]);
 
-      const settings = settingsRes.data ? mapSettings(settingsRes.data as Record<string, unknown>) : get().storeSettings;
+      const settings = responses[0].data ? mapSettings(responses[0].data as Record<string, unknown>) : get().storeSettings;
 
-      const customers: Customer[] = ((customersRes.data ?? []) as Record<string, unknown>[]).map((c) => ({
+      const customers: Customer[] = ((responses[3].data ?? []) as Record<string, unknown>[]).map((c) => ({
         id: c.id as string,
         name: c.name as string,
         phone: c.phone as string,
@@ -540,7 +571,7 @@ export const useStore = create<CashierStore>((set, get) => ({
         timestamp: c.created_at as string,
       }));
 
-      const orders: Order[] = ((ordersRes.data ?? []) as Record<string, unknown>[]).map((o) => {
+      const orders: Order[] = ((responses[4].data ?? []) as Record<string, unknown>[]).map((o) => {
         const custRow = o.customers as Record<string, unknown> | null;
         const itemRows = (o.order_items as Record<string, unknown>[]) ?? [];
         const items: OrderItem[] = itemRows.map((i) => {
@@ -588,28 +619,30 @@ export const useStore = create<CashierStore>((set, get) => ({
         };
       });
 
-      const counter = (counterRes.data as Record<string, unknown> | null)?.current_value as number ?? 1;
+      const counter = (responses[5].data as Record<string, unknown> | null)?.current_value as number ?? 1;
 
         set({
         storeSettings: settings,
-        categories: (categoriesRes.data ?? []) as Category[],
-        products: (productsRes.data ?? []).map((p: any) => ({
+        categories: (responses[1].data ?? []) as Category[],
+        products: (responses[2].data ?? []).map((p: any) => ({
           ...p,
           average_purchase_price: p.average_purchase_price ?? p.purchase_price ?? 0
         })) as Product[],
         customers,
         orders,
-        cashiers: (cashiersRes.data ?? []) as Cashier[],
+        cashiers: (responses[6].data ?? []) as Cashier[],
         expenses: [], // Default to empty
+        employees: (responses[7].data ?? []) as Employee[],
+        employeeTransactions: (responses[8].data ?? []) as EmployeeTransaction[],
+        employeeLeaves: (responses[9].data ?? []) as EmployeeLeave[],
+        productSuggestions: (responses[10].data ?? []) as ProductSuggestion[],
+        accountantNotes: (responses[11].data ?? []) as AccountantNote[],
         invoiceCounter: counter,
         activeInvoiceId: counter.toString(),
         isLoading: false,
         activeCashier: sessionStorage.getItem('active_cashier_name') 
-          ? ((cashiersRes.data ?? []) as Cashier[]).find(c => c.name === sessionStorage.getItem('active_cashier_name')) || null
+          ? ((responses[6].data ?? []) as Cashier[]).find(c => c.name === sessionStorage.getItem('active_cashier_name')) || null
           : (sessionStorage.getItem('cashier_pos_auth') === 'true' ? { id: 'master', name: 'المدير', pin: '123456', phone: '', photo_url: '', created_at: '' } : null),
-        employees: (employeesRes.data ?? []) as Employee[],
-        employeeTransactions: (employeeTransactionsRes.data ?? []) as EmployeeTransaction[],
-        employeeLeaves: (employeeLeavesRes.data ?? []) as EmployeeLeave[],
       });
 
       // Fetch expenses separately to avoid breaking the whole loadAll if the table is missing
@@ -2720,5 +2753,63 @@ setupRealtime: () => {
     }
 
     set((state) => ({ employeeLeaves: state.employeeLeaves.filter(l => l.id !== id) }));
+  },
+
+  addProductSuggestion: async (suggestion) => {
+    const { data, error } = await supabase.from('product_suggestions').insert([suggestion]).select();
+    if (error) {
+      console.error("Add Product Suggestion Error:", error);
+      return;
+    }
+    if (data && data[0]) {
+      set((state) => ({ productSuggestions: [data[0] as ProductSuggestion, ...state.productSuggestions] }));
+    }
+  },
+
+  markProductSuggestionPurchased: async (id) => {
+    const { error } = await supabase.from('product_suggestions').delete().eq('id', id);
+    if (error) {
+      console.error("Mark Product Suggestion Purchased Error:", error);
+      return;
+    }
+    set((state) => ({ productSuggestions: state.productSuggestions.filter(s => s.id !== id) }));
+  },
+
+  deleteProductSuggestion: async (id) => {
+    const { error } = await supabase.from('product_suggestions').delete().eq('id', id);
+    if (error) {
+      console.error("Delete Product Suggestion Error:", error);
+      return;
+    }
+    set((state) => ({ productSuggestions: state.productSuggestions.filter(s => s.id !== id) }));
+  },
+
+  addAccountantNote: async (note) => {
+    const { data, error } = await supabase.from('accountant_notes').insert([note]).select();
+    if (error) {
+      console.error("Add Accountant Note Error:", error);
+      return;
+    }
+    if (data && data[0]) {
+      set((state) => ({ accountantNotes: [data[0] as AccountantNote, ...state.accountantNotes] }));
+    }
+  },
+
+  markAccountantNoteRead: async (id) => {
+    const { error } = await supabase.from('accountant_notes').delete().eq('id', id);
+    if (error) {
+      console.error("Mark Accountant Note Read Error:", error);
+      return;
+    }
+    set((state) => ({ accountantNotes: state.accountantNotes.filter(n => n.id !== id) }));
+  },
+
+  deleteAccountantNote: async (id) => {
+    const { error } = await supabase.from('accountant_notes').delete().eq('id', id);
+    if (error) {
+      console.error("Delete Accountant Note Error:", error);
+      return;
+    }
+    set((state) => ({ accountantNotes: state.accountantNotes.filter(n => n.id !== id) }));
   },
 }));
