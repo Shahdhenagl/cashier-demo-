@@ -20,7 +20,7 @@ const allowedCollections = new Set([
   'purchase_invoices',
   'purchase_items',
   'product_suggestions',
-  'accountant_notes',
+  'cashier_notes',
 ]);
 
 let clientPromise;

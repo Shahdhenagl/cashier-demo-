@@ -7,7 +7,7 @@ import { normalizeArabic } from '../utils/textUtils';
 
 
 export default function POS() {
-  const { products, categories, cart, addToCart, removeFromCart, updateQuantity, updatePrice, clearCart, checkout, processReturn, storeSettings, orders, activeInvoiceId, customers, activeCashier, logoutPOS, isOnline, offlineQueue, offlineReturnsQueue, isSyncing, syncOfflineQueue, syncOfflineReturnsQueue } = useStore();
+  const { products, categories, cart, addToCart, removeFromCart, updateQuantity, updatePrice, clearCart, checkout, processReturn, storeSettings, orders, activeInvoiceId, customers, activeCashier, logoutPOS, isOnline, offlineQueue, offlineReturnsQueue, isSyncing, syncOfflineQueue, syncOfflineReturnsQueue, addCashierNote } = useStore();
   const navigate = useNavigate();
 
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -127,22 +127,27 @@ export default function POS() {
     if (!noteText.trim()) return;
     setIsSendingNote(true);
     try {
+      const actorName = activeCashier?.name || 'كاشير';
+      // 1. Send Telegram Alert
       await fetch('/api/telegram-alert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           type: 'custom_note',
-          actor: activeCashier?.name || 'كاشير',
+          actor: actorName,
           date: new Date().toISOString(),
           noteText: noteText.trim()
         })
       });
-      alert('تم إرسال الرسالة بنجاح للمدير');
+
+      // 2. Save note to database
+      await addCashierNote(actorName, noteText.trim());
+
+      alert('تم إرسال الرسالة بنجاح');
       setShowNoteModal(false);
       setNoteText('');
-    } catch (error) {
-      console.error('Error sending note:', error);
-      alert('فشل في إرسال الرسالة');
+    } catch (e) {
+      alert('حدث خطأ أثناء الإرسال');
     } finally {
       setIsSendingNote(false);
     }

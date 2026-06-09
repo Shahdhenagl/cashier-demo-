@@ -18,7 +18,7 @@ import Cashiers from './pages/admin/Cashiers';
 import Employees from './pages/admin/Employees';
 import Budget from './pages/admin/Budget';
 import Financing from './pages/admin/Financing';
-import Needs from './pages/admin/Needs';
+import StockAlerts from './pages/admin/StockAlerts';
 import PublicInvoice from './pages/PublicInvoice';
 import { useStore } from './store/useStore';
 
@@ -174,8 +174,8 @@ function App() {
             <Route path="deferred" element={<DeferredAccounts />} />
             <Route path="finance" element={<Finance />} />
             <Route path="financing" element={<Financing />} />
-            <Route path="needs" element={<Needs />} />
             <Route path="employees" element={<Employees />} />
+            <Route path="stock-alerts" element={<StockAlerts />} />
             <Route path="budget" element={<Budget />} />
             <Route path="settings" element={<Settings />} />
           </Route>

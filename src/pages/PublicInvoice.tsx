@@ -62,7 +62,7 @@ export default function PublicInvoice() {
             
             if (allCustOrders) {
               debtBefore = allCustOrders.reduce((sum: number, ord: any) => {
-                if (ord.id === o.id) return sum; 
+                if (ord.id === o.id) return sum;
                 if (ord.type === 'payment') return sum - ord.paid_amount;
                 if (ord.type === 'return') return sum;
                 return sum + (ord.total - ord.paid_amount);

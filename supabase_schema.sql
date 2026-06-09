@@ -217,3 +217,33 @@ create policy "allow all" on financing_transactions for all using (true) with ch
 create policy "allow all" on suppliers for all using (true) with check (true);
 create policy "allow all" on purchase_invoices for all using (true) with check (true);
 create policy "allow all" on purchase_items for all using (true) with check (true);
+
+-- Create product_suggestions table
+CREATE TABLE public.product_suggestions (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  name TEXT NOT NULL,
+  notes TEXT,
+  is_purchased BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Enable RLS
+ALTER TABLE public.product_suggestions ENABLE ROW LEVEL SECURITY;
+
+-- Create policy for product_suggestions
+CREATE POLICY "Allow all operations on product_suggestions" ON public.product_suggestions FOR ALL USING (true) WITH CHECK (true);
+
+-- Create cashier_notes table
+CREATE TABLE public.cashier_notes (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  cashier_name TEXT NOT NULL,
+  note TEXT NOT NULL,
+  is_read BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Enable RLS
+ALTER TABLE public.cashier_notes ENABLE ROW LEVEL SECURITY;
+
+-- Create policy for cashier_notes
+CREATE POLICY "Allow all operations on cashier_notes" ON public.cashier_notes FOR ALL USING (true) WITH CHECK (true);

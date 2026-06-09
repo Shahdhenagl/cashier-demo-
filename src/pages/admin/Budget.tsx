@@ -286,16 +286,47 @@ export default function Budget() {
       .filter(order => orderMatchesDateFilter(new Date(order.date)))
       .reduce((sum, order) => sum + getInvoiceProfitByMethod(order), 0);
 
+    const getEndOfPeriod = () => {
+      const now = new Date();
+      if (dateFilter === 'today') {
+        return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      }
+      if (dateFilter === 'month') {
+        return new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      }
+      if (dateFilter === 'year') {
+        return new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+      }
+      if (dateFilter === 'custom') {
+        const d = new Date(customDate);
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+      }
+      if (dateFilter === 'custom_month') {
+        const [year, month] = customMonth.split('-');
+        return new Date(Number(year), Number(month), 0, 23, 59, 59, 999);
+      }
+      if (dateFilter === 'custom_year') {
+        return new Date(Number(customYear), 11, 31, 23, 59, 59, 999);
+      }
+      return new Date(8640000000000000);
+    };
+
+    const endOfPeriod = getEndOfPeriod();
+    const closingBalance = allTransactions
+      .filter(tx => tx.date <= endOfPeriod)
+      .reduce((sum, tx) => sum + (tx.type === 'revenue' ? tx.amount : -tx.amount), 0);
+
     return {
       totalRevenue,
       totalExpense,
       invoiceProfit,
       collectedFromInvoices,
       collectedFromOther,
+      closingBalance,
       netProfit: totalRevenue - totalExpense,
       count: filteredTransactions.length
     };
-  }, [filteredTransactions, orders, dateFilter, customDate, customMonth, customYear, methodFilter]);
+  }, [filteredTransactions, allTransactions, orders, dateFilter, customDate, customMonth, customYear, methodFilter]);
 
   const totalCustomerDebt = useMemo(() => {
     return Math.max(0, orders.filter(o => !o.is_deleted).reduce((sum, o) => sum + (o.total - o.paid_amount), 0));
@@ -414,7 +445,22 @@ export default function Budget() {
       </div>
 
       {/* New Breakdown Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700 relative overflow-hidden group">
+          <div className="absolute inset-0 opacity-10 transition-opacity group-hover:opacity-20 bg-blue-500" />
+          <div className="flex items-center gap-4 mb-4 relative z-10">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg bg-blue-500">
+              <Banknote size={24} />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-slate-500">رصيد الخزنة (الإغلاق)</p>
+              <h3 className="text-2xl font-black mt-1 text-blue-600 dark:text-blue-400">
+                {stats.closingBalance.toFixed(2)} <span className="text-xs text-slate-400">{storeSettings.currency}</span>
+              </h3>
+            </div>
+          </div>
+        </div>
+
         <div className="bg-white dark:bg-slate-800 p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-4 mb-4">
             <div className="w-12 h-12 bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 rounded-2xl flex items-center justify-center">
