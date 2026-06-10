@@ -152,7 +152,9 @@ class MongoQueryBuilder {
       const json = await response.json();
 
       if (!response.ok) {
-        return { data: null, error: new Error(json.error || 'Mongo API request failed') };
+        const errMsg = json.error || 'Mongo API request failed';
+        alert(`API Error: ${response.status} - ${errMsg}`);
+        return { data: null, error: new Error(errMsg) };
       }
 
       let data = json.data;
@@ -166,6 +168,7 @@ class MongoQueryBuilder {
 
       return { data, error: null };
     } catch (error) {
+      alert(`Network/Fetch Error: ${error instanceof Error ? error.message : String(error)}`);
       return { data: null, error: error instanceof Error ? error : new Error(String(error)) };
     }
   }
