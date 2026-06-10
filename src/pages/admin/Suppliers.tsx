@@ -35,6 +35,24 @@ function ProductSearchSelect({
   const filtered = products.filter(p => {
     const normalizedName = normalizeArabic(p.name);
     return searchTerms.length === 0 || searchTerms.every(term => normalizedName.includes(term)) || (p.barcode && p.barcode.includes(search));
+  }).sort((a, b) => {
+    // 1. Exact match ranking
+    if (search) {
+      const aExact = normalizeArabic(a.name) === normalizedSearch;
+      const bExact = normalizeArabic(b.name) === normalizedSearch;
+      if (aExact && !bExact) return -1;
+      if (bExact && !aExact) return 1;
+      
+      const aStarts = normalizeArabic(a.name).startsWith(normalizedSearch);
+      const bStarts = normalizeArabic(b.name).startsWith(normalizedSearch);
+      if (aStarts && !bStarts) return -1;
+      if (bStarts && !aStarts) return 1;
+    }
+    
+    // 2. Sort by newest (created_at descending)
+    const timeA = new Date((a as any).created_at || 0).getTime();
+    const timeB = new Date((b as any).created_at || 0).getTime();
+    return timeB - timeA;
   });
 
   return (
@@ -268,11 +286,11 @@ export default function Suppliers() {
         average_purchase_price: 0
       };
       
-      await addProduct(newProd);
+      const createdProduct = await addProduct(newProd);
       
-      // Wait for store update (next tick) or find the new product
+      // Try to find it in store as fallback just in case
       const allProducts = useStore.getState().products;
-      const created = allProducts.find(p => p.barcode === quickProductData.barcode);
+      const created = createdProduct || allProducts.find(p => p.barcode === quickProductData.barcode);
       
       if (created && quickProductIndex !== null) {
         const updated = [...invItems];

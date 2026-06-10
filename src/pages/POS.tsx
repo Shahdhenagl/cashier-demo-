@@ -105,6 +105,7 @@ export default function POS() {
   const [paidWallet, setPaidWallet] = useState('');
   const [paidInstapay, setPaidInstapay] = useState('');
   const [discountStr, setDiscountStr] = useState('');
+  const [couponInput, setCouponInput] = useState('');
   const [customerDebt, setCustomerDebt] = useState<number>(0);
 
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -282,11 +283,20 @@ export default function POS() {
   const handleConfirmReturns = async () => {
     if (!activeReturnOrder) return;
     
-    const returnsArray = Object.keys(pendingReturns).map(productId => ({
-       productId,
-       returnQty: pendingReturns[productId].returnQty,
-       refundAmount: pendingReturns[productId].refundAmount
-    })).filter(r => r.returnQty > 0);
+    const itemsSum = activeReturnOrder.items.reduce((sum: number, item: any) => sum + (item.quantity * item.sale_price), 0);
+    const dr = itemsSum > 0 ? activeReturnOrder.total / itemsSum : 1;
+
+    const returnsArray = Object.keys(pendingReturns).map(productId => {
+       const pr = pendingReturns[productId];
+       const item = activeReturnOrder.items.find((i: any) => i.id === productId);
+       const effectivePrice = item ? item.sale_price * dr : 0;
+       return {
+         productId,
+         returnQty: pr.returnQty,
+         refundAmount: pr.refundAmount,
+         debtDeduction: pr.returnType === 'debt' ? pr.returnQty * effectivePrice : 0
+       };
+    }).filter(r => r.returnQty > 0);
 
     if (returnsArray.length === 0) {
        alert("الرجاء تحديد كميات للإرجاع");
@@ -426,7 +436,8 @@ export default function POS() {
 
   <div class="summary-section">
     <div class="summary-row"><span>المجموع الفرعي:</span><span>${orderDetails.subtotal.toFixed(2)} ${currentSettings.currency}</span></div>
-    ${orderDetails.discount > 0 ? `<div class="summary-row" style="color:#e53e3e;font-weight:700;"><span>🏷️ الخصم:</span><span>- ${orderDetails.discount.toFixed(2)} ${currentSettings.currency}</span></div>` : ''}
+    ${orderDetails.couponCode ? `<div class="summary-row" style="color:#e53e3e;font-weight:700;"><span>كوبون (${orderDetails.couponCode}):</span><span>- ${(orderDetails.couponDiscountAmount || 0).toFixed(2)} ${currentSettings.currency}</span></div>` : ''}
+    ${(orderDetails.discount - (orderDetails.couponDiscountAmount || 0)) > 0.5 ? `<div class="summary-row" style="color:#e53e3e;font-weight:700;"><span>خصم الفاتورة:</span><span>- ${(orderDetails.discount - (orderDetails.couponDiscountAmount || 0)).toFixed(2)} ${currentSettings.currency}</span></div>` : ''}
     <div class="summary-row"><span>الضريبة (${currentSettings.taxRate}%):</span><span>${orderDetails.tax.toFixed(2)} ${currentSettings.currency}</span></div>
     <div class="summary-row total"><span>الإجمالي النهائي:</span><span>${orderDetails.total.toFixed(2)} ${currentSettings.currency}</span></div>
   
@@ -438,6 +449,13 @@ export default function POS() {
     ` : `
       <div class="payment-status status-paid">✓ تم سداد الفاتورة بالكامل</div>
     `}
+
+    ${orderDetails.notes ? `
+      <div style="margin-top:10px; padding:8px; background:#fff7ed; border-radius:8px; border:1px solid #ffedd5;">
+        <div style="font-size:11px; color:#c2410c; margin-bottom:4px; font-weight:bold;">ملاحظات:</div>
+        <div style="font-size:12px; color:#9a3412;">${orderDetails.notes}</div>
+      </div>
+    ` : ''}
     
     <div style="margin-top:10px; padding:8px; background:#f9fafb; border-radius:8px; border:1px solid #eee;">
       <div style="font-size:11px; color:#64748b; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:2px; text-align:right;">تفاصيل الدفع:</div>
@@ -469,12 +487,14 @@ export default function POS() {
   const doCheckout = async (shouldPrint: boolean) => {
     const currentCart = [...cart];
     const currentSubtotal = subtotal;
-    const currentDiscount = discount;
+    const currentDiscount = totalDiscount;
     const currentTax = tax;
     const currentTotal = total;
     const currentCustomerName = customerName;
     const currentCustomerPhone = customerPhone;
     const currentCustomerCard = customerId;
+    const currentCouponCode = validCoupon?.code;
+    const currentCouponDiscount = couponDiscountAmount;
     const matchedCustomer = customers.find(c =>
       (currentCustomerPhone && c.phone === currentCustomerPhone) ||
       (currentCustomerCard && (c.card_number === currentCustomerCard || c.custom_id === currentCustomerCard))
@@ -534,7 +554,7 @@ export default function POS() {
       }
     }
 
-    const invoiceId = await checkout(currentTotal, { name: currentCustomerName, phone: currentCustomerPhone, custom_id: currentCustomId }, effectivePaidAmount, 'sale', primaryMethod, finalSplit, undefined, deferredNote);
+    const invoiceId = await checkout(currentTotal, { name: currentCustomerName, phone: currentCustomerPhone, custom_id: currentCustomId }, effectivePaidAmount, 'sale', primaryMethod as any, finalSplit, undefined, deferredNote, currentCouponCode, currentCouponDiscount);
 
     const details: any = {
       cart: currentCart,
@@ -548,7 +568,9 @@ export default function POS() {
       customerPhone: currentCustomerPhone,
       customId: currentCustomId,
       paymentMethod: primaryMethod,
-      totalDebt: (customerDebt || 0) + (currentTotal - effectivePaidAmount)
+      totalDebt: (customerDebt || 0) + (currentTotal - effectivePaidAmount),
+      couponCode: currentCouponCode,
+      couponDiscountAmount: currentCouponDiscount
     };
 
     const actualCustomer = useStore.getState().customers.find(c =>
@@ -577,6 +599,7 @@ export default function POS() {
     setPaidWallet('');
     setPaidInstapay('');
     setDiscountStr('');
+    setCouponInput('');
     setCustomerDebt(0);
     setShowCustomerSuggestions(false);
   };
@@ -618,8 +641,53 @@ export default function POS() {
 
   const subtotal = cart.reduce((sum, item) => sum + item.sale_price * item.quantity, 0);
   const totalCost = cart.reduce((sum, item) => sum + (item.average_purchase_price || item.purchase_price || 0) * item.quantity, 0);
-  const discount = Math.min(parseFloat(discountStr) || 0, subtotal);
-  const discountedSubtotal = subtotal - discount;
+  const manualDiscount = Math.min(parseFloat(discountStr) || 0, subtotal);
+  
+  // Coupon Validation and Calculation
+  const appliedCoupon = couponInput.trim() ? useStore.getState().coupons.find(c => c.code === couponInput.trim().toUpperCase() && c.is_active) : null;
+  let couponDiscountAmount = 0;
+  let validCoupon: any = null;
+  let couponErrorMsg = '';
+  
+  if (appliedCoupon) {
+    const now = new Date();
+    const isValidDate = (!appliedCoupon.start_date || new Date(appliedCoupon.start_date) <= now) && (!appliedCoupon.end_date || new Date(appliedCoupon.end_date) >= now);
+    const isUnderTotalLimit = !appliedCoupon.max_uses_total || appliedCoupon.used_count < appliedCoupon.max_uses_total;
+    
+    // Calculate customer usages
+    let isUnderCustomerLimit = true;
+    if (appliedCoupon.max_uses_per_customer) {
+      if (!customerPhone && !customerId) {
+        // If coupon requires customer tracking but no customer is selected, it's invalid
+        isUnderCustomerLimit = false;
+        couponErrorMsg = 'يجب اختيار عميل لتطبيق الكوبون';
+      } else {
+        const customerUsages = useStore.getState().orders.filter(o => 
+          (o.customer?.id === customerId || o.customer?.phone === customerPhone) && 
+          o.coupon_code === appliedCoupon.code
+        ).length;
+        isUnderCustomerLimit = customerUsages < appliedCoupon.max_uses_per_customer;
+        if (!isUnderCustomerLimit) {
+            couponErrorMsg = 'تخطى العميل حد الاستخدام المسموح';
+        }
+      }
+    }
+    
+    if (!isValidDate) couponErrorMsg = 'تاريخ الكوبون غير صالح';
+    else if (!isUnderTotalLimit) couponErrorMsg = 'تخطى الكوبون إجمالي مرات الاستخدام';
+    
+    if (isValidDate && isUnderTotalLimit && isUnderCustomerLimit) {
+      validCoupon = appliedCoupon;
+      if (appliedCoupon.discount_type === 'percentage') {
+        couponDiscountAmount = (subtotal - manualDiscount) * (appliedCoupon.discount_value / 100);
+      } else {
+        couponDiscountAmount = appliedCoupon.discount_value;
+      }
+    }
+  }
+
+  const totalDiscount = manualDiscount + couponDiscountAmount;
+  const discountedSubtotal = Math.max(0, subtotal - totalDiscount);
   const tax = discountedSubtotal * (storeSettings.taxRate / 100);
   const total = discountedSubtotal + tax;
   const profit = discountedSubtotal - totalCost;
@@ -985,7 +1053,7 @@ export default function POS() {
                                         }
                                       }));
                                     }}
-                                    className="w-full bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 text-center font-bold text-red-600 focus:ring-2 focus:ring-red-500 outline-none"
+                                    className="w-full bg-white dark:bg-slate-700 border border-gray-200 dark:border-slate-600 rounded-lg px-3 py-2 text-center font-bold text-red-600 focus:ring-2 focus:ring-red-500 outline-none"
                                     placeholder="0.00"
                                     disabled={pr.returnQty === 0}
                                   />
@@ -1350,7 +1418,32 @@ export default function POS() {
               </div>
             </div>
 
-            <div className="flex justify-between items-center pt-3 border-t border-slate-100 dark:border-slate-700/50">
+            <div className="flex justify-between items-center text-sm font-bold mt-2 text-slate-500 dark:text-slate-400">
+              <span className="flex items-center gap-1">
+                كوبون:
+                {validCoupon && (
+                  <span className="text-xs bg-emerald-100 text-emerald-700 px-2 rounded-full">
+                    مفعل (خصم {couponDiscountAmount} ج.م)
+                  </span>
+                )}
+                {couponInput.trim() && !validCoupon && (
+                  <div className="flex flex-col text-right">
+                    <span className="text-xs text-red-500 font-bold">غير صالح</span>
+                    <span className="text-[10px] text-red-400 max-w-[200px] break-words">{couponErrorMsg || 'الكوبون غير موجود أو غير مفعل'}</span>
+                  </div>
+                )}
+              </span>
+              <div className="flex items-center gap-2 bg-rose-50/50 dark:bg-rose-900/30 px-4 py-2 rounded-2xl border-2 border-rose-200 dark:border-rose-800/50 shadow-sm transition-all focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-100">
+                <input
+                  type="text" dir="ltr" value={couponInput}
+                  onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                  placeholder="كود الخصم"
+                  className="w-28 uppercase bg-transparent border-0 p-0 text-sm font-black focus:ring-0 text-left text-rose-700 dark:text-rose-300 placeholder-rose-300"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center pt-3 mt-3 border-t border-slate-100 dark:border-slate-700/50">
               <span className="text-xs font-black text-slate-400 uppercase tracking-widest">الإجمالي النهائي</span>
               <div className="flex flex-col items-end">
                 <span className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-tighter">

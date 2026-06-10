@@ -68,7 +68,7 @@ export default function Inventory() {
     const matchesStock = showLowStock ? p.stock_quantity < 5 : true;
     const matchesHidden = showHidden ? p.is_hidden === true : !p.is_hidden; // showHidden=true → المخفيين فقط
     return matchesSearch && matchesStock && matchesHidden;
-  });
+  }).sort((a, b) => new Date((b as any).created_at || 0).getTime() - new Date((a as any).created_at || 0).getTime());
   const hiddenCount = products.filter(p => p.is_hidden).length;
   
   const totalStockValue = products.reduce((acc, p) => acc + (p.stock_quantity * (p.average_purchase_price || p.purchase_price || 0)), 0);

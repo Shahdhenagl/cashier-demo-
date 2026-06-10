@@ -84,6 +84,9 @@ export default function PublicInvoice() {
             date: o.created_at,
             items,
             cashier_name: o.cashier_name,
+            notes: o.notes,
+            coupon_code: o.coupon_code,
+            discount_amount: o.discount || 0,
             debtBefore,
             debtAfter,
             originType: 'sale',
@@ -328,12 +331,18 @@ export default function PublicInvoice() {
                     <span className="text-slate-500">المجموع الفرعي</span>
                     <span className="text-slate-800">{subtotal.toFixed(2)} {settings.currency}</span>
                   </div>
-                  {calculatedDiscount > 0.5 && (
-                    <div className="flex justify-between text-xs font-bold text-red-500">
-                      <span>🏷️ الخصم</span>
-                      <span>- {calculatedDiscount.toFixed(2)} {settings.currency}</span>
+                  {order.coupon_code && (
+                    <div className="flex justify-between text-xs font-bold text-rose-500">
+                      <span>كوبون خصم ({order.coupon_code})</span>
+                      <span>- {order.discount_amount?.toFixed(2) || '0.00'} {settings.currency}</span>
                     </div>
                   )}
+                  {calculatedDiscount - (order.discount_amount || 0) > 0.5 && (
+                      <div className="flex justify-between text-xs font-bold text-red-500">
+                        <span>خصم الفاتورة</span>
+                        <span>- {(calculatedDiscount - (order.discount_amount || 0)).toFixed(2)} {settings.currency}</span>
+                      </div>
+                    )}
                   {taxRate > 0 && (
                     <div className="flex justify-between text-xs font-bold">
                       <span className="text-slate-500">الضريبة ({taxRate}%)</span>

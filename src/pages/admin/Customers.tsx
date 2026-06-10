@@ -7,6 +7,7 @@ import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { printPaymentReceipt } from '../../utils/printPaymentReceipt';
 
 export default function Customers() {
   const { customers, orders, storeSettings } = useStore();
@@ -180,7 +181,7 @@ export default function Customers() {
     if (totalPaid <= 0) return alert("يرجى إدخال مبلغ التحصيل");
 
     try {
-      await checkout(
+      const invoiceId = await checkout(
         0, 
         { name: selectedCustomer.name, phone: selectedCustomer.phone, custom_id: selectedCustomer.custom_id },
         totalPaid,
@@ -190,6 +191,13 @@ export default function Customers() {
       );
       
       alert("تم تسجيل التحصيل بنجاح");
+      
+      if (invoiceId) {
+        const state = useStore.getState();
+        const paymentOrder = state.orders.find(o => o.id === invoiceId);
+        if (paymentOrder) printPaymentReceipt(paymentOrder, storeSettings);
+      }
+      
       setIsPaymentModalOpen(false);
       setPaymentForm({ cash: '', visa: '', wallet: '', instapay: '', note: '' });
       
@@ -202,24 +210,20 @@ export default function Customers() {
   };
 
   const handlePrintInvoice = (order: any) => {
-    const printDate = new Date(order.date).toLocaleString('ar-SA');
-    const isPayment = order.type === 'payment';
+    if (order.type === 'payment') {
+      printPaymentReceipt(order, storeSettings);
+      return;
+    }
     
-    let itemsHtml = '';
-    if (isPayment) {
-      itemsHtml = `<tr>
-        <td colspan="2" style="padding:12px 4px;border-bottom:1px dashed #ddd;font-size:14px;font-weight:bold;">تحصيل مديونية سابقة</td>
-        <td style="padding:12px 4px;border-bottom:1px dashed #ddd;text-align:left;font-size:14px;font-weight:bold;">${order.paid_amount.toFixed(2)}</td>
-      </tr>`;
-    } else {
-      itemsHtml = order.items.map((item: any) =>
+    const printDate = new Date(order.date).toLocaleString('ar-SA');
+    
+    let itemsHtml = order.items.map((item: any) =>
         `<tr>
           <td style="padding:6px 4px;border-bottom:1px dashed #ddd;font-size:13px;">${item.name}${item.returned_quantity > 0 ? ` <span style="color:red;font-size:10px;">(مرتجع: ${item.returned_quantity})</span>` : ''}</td>
           <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:center;font-size:13px;">${item.quantity}</td>
           <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:left;font-size:13px;">${(item.sale_price * item.quantity).toFixed(2)}</td>
         </tr>`
       ).join('');
-    }
 
     const html = `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -259,9 +263,31 @@ export default function Customers() {
     <tbody>${itemsHtml}</tbody>
   </table>
   <div class="totals">
-    <div class="total-row grand-total"><span>الإجمالي:</span><span>${order.total.toFixed(2)}</span></div>
-    <div class="total-row"><span>المدفوع:</span><span>${order.paid_amount.toFixed(2)}</span></div>
+    <div class="total-row grand-total"><span>الإجمالي الأصلي:</span><span>${order.total.toFixed(2)}</span></div>
+    ${(() => {
+      const returnedValue = order.items.reduce((sum: number, item: any) => sum + ((item.returned_quantity || 0) * (item.sale_price || 0)), 0);
+      if (returnedValue > 0) {
+        const refundedCash = order.items.reduce((sum: number, item: any) => sum + (item.refunded_amount || 0), 0);
+        const debtDeduction = Math.max(0, returnedValue - refundedCash);
+        return `
+          <div class="total-row" style="color:#dc2626;font-weight:bold;font-size:12px;"><span>إجمالي المرتجعات:</span><span>- ${returnedValue.toFixed(2)}</span></div>
+          ${refundedCash > 0 ? `<div class="total-row" style="color:#ef4444;font-size:11px;"><span>مرتجع كاش نقدي:</span><span>${refundedCash.toFixed(2)}</span></div>` : ''}
+          ${debtDeduction > 0 ? `<div class="total-row" style="color:#ef4444;font-size:11px;"><span>مرتجع (خصم من المديونية):</span><span>${debtDeduction.toFixed(2)}</span></div>` : ''}
+          <div class="total-row" style="font-weight:bold;margin-top:4px;border-top:1px dashed #ccc;padding-top:4px;"><span>الإجمالي بعد المرتجع:</span><span>${Math.max(0, order.total - returnedValue).toFixed(2)}</span></div>
+        `;
+      }
+      return '';
+    })()}
+    <div class="total-row" style="margin-top:6px;font-weight:bold;"><span>إجمالي المدفوع:</span><span>${order.paid_amount.toFixed(2)}</span></div>
   </div>
+
+  ${order.notes ? `
+    <div style="margin-top:12px; padding:8px; background:#fff7ed; border-radius:6px; border:1px solid #ffedd5; font-size:12px;">
+      <strong style="color:#c2410c; display:block; margin-bottom:4px; font-size:11px;">ملاحظات:</strong>
+      <span style="color:#9a3412;">${order.notes}</span>
+    </div>
+  ` : ''}
+
   <div class="footer">شكراً لزيارتكم</div>
   <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
 </body></html>`;

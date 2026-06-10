@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useStore } from '../../store/useStore';
-import { AlertTriangle, PackageX, PackageMinus, Lightbulb, MessageSquare, Check, Trash2, Plus } from 'lucide-react';
+import { AlertTriangle, PackageX, PackageMinus, Lightbulb, MessageSquare, Check, Trash2, Plus, Eye, EyeOff } from 'lucide-react';
 
 export default function StockAlerts() {
   const { 
     products, 
+    updateProduct,
     productSuggestions, 
     addProductSuggestion, 
     markSuggestionAsPurchased, 
@@ -21,8 +22,8 @@ export default function StockAlerts() {
   const LOW_STOCK_THRESHOLD = 5;
 
   // Derived Data
-  const outOfStockProducts = products.filter(p => p.stock_quantity <= 0 && !p.is_hidden);
-  const lowStockProducts = products.filter(p => p.stock_quantity > 0 && p.stock_quantity <= LOW_STOCK_THRESHOLD && !p.is_hidden);
+  const outOfStockProducts = products.filter(p => p.stock_quantity <= 0);
+  const lowStockProducts = products.filter(p => p.stock_quantity > 0 && p.stock_quantity <= LOW_STOCK_THRESHOLD);
   const unpurchasedSuggestions = productSuggestions.filter(s => !s.is_purchased);
   const unreadNotes = cashierNotes.filter(n => !n.is_read);
 
@@ -62,14 +63,23 @@ export default function StockAlerts() {
             {outOfStockProducts.length > 0 ? (
               <ul className="space-y-3">
                 {outOfStockProducts.map(product => (
-                  <li key={product.id} className="flex justify-between items-center p-4 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                    <div>
+                  <li key={product.id} className={`flex justify-between items-center p-4 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700 transition-opacity ${product.is_hidden ? 'opacity-50 grayscale' : ''}`}>
+                    <div className="flex-1">
                       <p className="font-bold text-slate-800 dark:text-white">{product.name}</p>
                       <p className="text-xs text-slate-500 mt-1">الباركود: {product.barcode}</p>
                     </div>
-                    <span className="px-3 py-1 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 rounded-full text-sm font-bold">
-                      نفد
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => updateProduct(product.id, { is_hidden: !product.is_hidden })}
+                        className={`p-2 rounded-full transition-colors ${product.is_hidden ? 'bg-slate-200 text-slate-500' : 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'}`}
+                        title={product.is_hidden ? 'إظهار في الكاشير' : 'إخفاء من الكاشير'}
+                      >
+                        {product.is_hidden ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                      <span className="px-3 py-1 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 rounded-full text-sm font-bold">
+                        نفد
+                      </span>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -97,14 +107,23 @@ export default function StockAlerts() {
             {lowStockProducts.length > 0 ? (
               <ul className="space-y-3">
                 {lowStockProducts.map(product => (
-                  <li key={product.id} className="flex justify-between items-center p-4 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700">
-                    <div>
+                  <li key={product.id} className={`flex justify-between items-center p-4 rounded-2xl bg-slate-50 dark:bg-slate-700/30 border border-slate-100 dark:border-slate-700 transition-opacity ${product.is_hidden ? 'opacity-50 grayscale' : ''}`}>
+                    <div className="flex-1">
                       <p className="font-bold text-slate-800 dark:text-white">{product.name}</p>
                       <p className="text-xs text-slate-500 mt-1">الباركود: {product.barcode}</p>
                     </div>
-                    <span className="px-3 py-1 bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 rounded-full text-sm font-bold flex items-center gap-1">
-                      متبقي: {product.stock_quantity}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => updateProduct(product.id, { is_hidden: !product.is_hidden })}
+                        className={`p-2 rounded-full transition-colors ${product.is_hidden ? 'bg-slate-200 text-slate-500' : 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'}`}
+                        title={product.is_hidden ? 'إظهار في الكاشير' : 'إخفاء من الكاشير'}
+                      >
+                        {product.is_hidden ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                      <span className="px-3 py-1 bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 rounded-full text-sm font-bold flex items-center gap-1">
+                        متبقي: {product.stock_quantity}
+                      </span>
+                    </div>
                   </li>
                 ))}
               </ul>

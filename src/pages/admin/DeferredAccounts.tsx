@@ -7,6 +7,7 @@ import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { printPaymentReceipt } from '../../utils/printPaymentReceipt';
 
 export default function DeferredAccounts() {
   const { customers, orders, suppliers, purchaseInvoices, storeSettings, checkout, payInvoiceDebt, addPurchaseInvoice, addSupplier } = useStore();
@@ -33,6 +34,7 @@ export default function DeferredAccounts() {
   const [addDebtSearch, setAddDebtSearch] = useState('');
   const [selectedAddDebtEntity, setSelectedAddDebtEntity] = useState<any>(null);
   const [addDebtAmount, setAddDebtAmount] = useState<string>('');
+  const [addDebtNotes, setAddDebtNotes] = useState<string>('');
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   // --- Customers Logic (جلب مباشر من Supabase بدون قيود الـ 200 فاتورة) ---
@@ -144,6 +146,7 @@ export default function DeferredAccounts() {
     setSelectedAddDebtEntity(null);
     setAddDebtAmount('');
     setAddDebtSearch('');
+    setAddDebtNotes('');
     setIsAddDebtOpen(true);
   };
 
@@ -164,7 +167,11 @@ export default function DeferredAccounts() {
           amount, 
           selectedAddDebtEntity ? { name: selectedAddDebtEntity.name, phone: selectedAddDebtEntity.phone, custom_id: selectedAddDebtEntity.custom_id } : { name: addDebtSearch, phone: '' }, 
           0, 
-          'previous_debt' as any // Using previous_debt type if supported, or sale
+          'previous_debt' as any, // Using previous_debt type if supported, or sale
+          'cash',
+          undefined,
+          undefined,
+          addDebtNotes || 'مديونية سابقة'
         );
         alert(`تم إضافة مديونية العميل السابقة بنجاح!\nرقم الفاتورة: ${invoiceId}`);
       } catch (e: any) {
@@ -191,7 +198,8 @@ export default function DeferredAccounts() {
           supplier_id: supplierId,
           total: amount,
           paid_amount: 0,
-          payment_method: 'cash'
+          payment_method: 'cash',
+          notes: addDebtNotes || 'مستحقات سابقة'
         }, []);
         alert(`تم إضافة مستحقات المورد السابقة بنجاح!\nرقم الفاتورة: ${invoiceNum}`);
       } catch (e: any) {
@@ -309,8 +317,8 @@ export default function DeferredAccounts() {
 
     try {
       if (activeTab === 'customers') {
-        if (selectedInvoice) {
-           await payInvoiceDebt(
+         if (selectedInvoice) {
+           const paymentId = await payInvoiceDebt(
              selectedInvoice.id,
              selectedEntity.id,
              totalPaid,
@@ -318,7 +326,13 @@ export default function DeferredAccounts() {
              getPrimaryPaymentMethod(cash, visa, wallet, insta)
            );
            alert('تم تسجيل سداد للفاتورة بنجاح!');
-        } else {
+           
+           if (paymentId) {
+             const state = useStore.getState();
+             const paymentOrder = state.orders.find(o => o.id === paymentId);
+             if (paymentOrder) printPaymentReceipt(paymentOrder, storeSettings);
+           }
+         } else {
            const invoiceId = await checkout(
              0, 
              { name: selectedEntity.name, phone: selectedEntity.phone, custom_id: selectedEntity.custom_id }, 
@@ -328,8 +342,14 @@ export default function DeferredAccounts() {
              { cash, visa, wallet, instapay: insta }
            );
            alert(`تم تسجيل تحصيل من العميل بنجاح!\nرقم الإيصال: ${invoiceId}`);
-        }
-      } else {
+           
+           if (invoiceId) {
+             const state = useStore.getState();
+             const paymentOrder = state.orders.find(o => o.id === invoiceId);
+             if (paymentOrder) printPaymentReceipt(paymentOrder, storeSettings);
+           }
+         }
+       } else {
         const invoiceNum = `PAY-DEBT-${Date.now()}`;
         await addPurchaseInvoice({
           invoice_number: invoiceNum,
@@ -712,6 +732,20 @@ export default function DeferredAccounts() {
                     min={1}
                   />
                   <div className="absolute left-4 top-4 text-slate-400 font-bold">{storeSettings.currency}</div>
+                </div>
+              </div>
+              
+              {/* Debt Notes */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">الوصف / البيان (اختياري)</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    className="w-full border border-slate-200 rounded-xl py-3 px-4 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-inner"
+                    value={addDebtNotes}
+                    onChange={(e) => setAddDebtNotes(e.target.value)}
+                    placeholder="مثال: رصيد مرحل من الدفتر القديم..."
+                  />
                 </div>
               </div>
 

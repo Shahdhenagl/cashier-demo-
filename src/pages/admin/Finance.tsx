@@ -15,7 +15,8 @@ import { allocatePayment } from '../../utils/paymentAllocator';
 export default function Finance() {
   const { 
     expenses, orders, storeSettings, addExpense, updateExpense, 
-    deleteExpense, purchaseInvoices 
+    deleteExpense, deletePurchaseInvoice, purchaseInvoices,
+    deleteOrder, editOrder, updatePurchaseInvoice
   } = useStore();
   const activeOrders = useMemo(() => orders.filter((order) => !order.is_deleted), [orders]);
   
@@ -30,6 +31,8 @@ export default function Finance() {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const [editingPurchase, setEditingPurchase] = useState<PurchaseInvoice | null>(null);
   const [formData, setFormData] = useState({ 
     transaction_type: 'expense',
     category: 'عام', 
@@ -64,7 +67,7 @@ export default function Finance() {
     
     const ordersIn = activeOrders
       .filter(o => new Date(o.date) < startOfPeriod)
-      .reduce((sum, o) => sum + o.paid_amount, 0);
+      .reduce((sum, o) => sum + ((o.paid_cash || 0) + (o.paid_visa || 0) + (o.paid_wallet || 0) + (o.paid_instapay || 0)), 0);
     
     const returnsOut = activeOrders
       .filter(o => new Date(o.date) < selDate)
@@ -235,6 +238,8 @@ export default function Finance() {
   // --- Handlers ---
 
   const handleOpenModal = (expense: Expense | null = null) => {
+    setEditingOrder(null);
+    setEditingPurchase(null);
     if (expense) {
       setEditingExpense(expense);
       setFormData({ 
@@ -263,6 +268,41 @@ export default function Finance() {
     setShowModal(true);
   };
 
+  const handleOpenEditOrder = (order: Order) => {
+    setEditingOrder(order);
+    setEditingExpense(null);
+    setEditingPurchase(null);
+    setFormData({
+      transaction_type: 'income',
+      category: order.type === 'payment' ? 'تحصيل من عميل' : 'مبيعات',
+      amount: order.paid_amount.toString(),
+      paid_cash: (order.paid_cash || 0).toString(),
+      paid_visa: (order.paid_visa || 0).toString(),
+      paid_wallet: (order.paid_wallet || 0).toString(),
+      paid_instapay: (order.paid_instapay || 0).toString(),
+      note: order.notes || ''
+    });
+    setShowModal(true);
+  };
+
+  const handleOpenEditPurchase = (purchase: PurchaseInvoice) => {
+    setEditingPurchase(purchase);
+    setEditingExpense(null);
+    setEditingOrder(null);
+    const isPayment = purchase.total === 0;
+    setFormData({
+      transaction_type: 'expense',
+      category: isPayment ? 'سداد لمورد' : 'شراء بضاعة',
+      amount: purchase.paid_amount.toString(),
+      paid_cash: (purchase.paid_cash || 0).toString(),
+      paid_visa: (purchase.paid_visa || 0).toString(),
+      paid_wallet: (purchase.paid_wallet || 0).toString(),
+      paid_instapay: (purchase.paid_instapay || 0).toString(),
+      note: ''
+    });
+    setShowModal(true);
+  };
+
   const handleSubmit = async () => {
     const cash = parseFloat(formData.paid_cash) || 0;
     const visa = parseFloat(formData.paid_visa) || 0;
@@ -272,25 +312,92 @@ export default function Finance() {
     const amountNum = cash + visa + wallet + insta;
     if (amountNum <= 0) return alert('يرجى إدخال مبالغ الدفع أولاً');
 
-    const multiplier = formData.transaction_type === 'income' ? -1 : 1;
-
-    const expenseData = {
-      category: formData.category,
-      amount: amountNum * multiplier,
-      paid_cash: cash * multiplier,
-      paid_visa: visa * multiplier,
-      paid_wallet: wallet * multiplier,
-      paid_instapay: insta * multiplier,
-      note: formData.note,
-      payment_method: cash >= visa ? 'cash' : 'visa'
-    };
-
-    if (editingExpense) {
-      await updateExpense(editingExpense.id, expenseData as any);
-    } else {
-      await addExpense(expenseData as any);
+    setLoading(true);
+    try {
+      if (editingExpense) {
+        const multiplier = formData.transaction_type === 'income' ? -1 : 1;
+        const expenseData = {
+          category: formData.category,
+          amount: amountNum * multiplier,
+          paid_cash: cash * multiplier,
+          paid_visa: visa * multiplier,
+          paid_wallet: wallet * multiplier,
+          paid_instapay: insta * multiplier,
+          note: formData.note,
+          payment_method: cash >= visa ? 'cash' : 'visa'
+        };
+        await updateExpense(editingExpense.id, expenseData as any);
+      } else if (editingOrder) {
+        const updatedData = {
+          paid_cash: cash,
+          paid_visa: visa,
+          paid_wallet: wallet,
+          paid_instapay: insta,
+          paid_amount: amountNum,
+          payment_method: (cash >= visa ? 'cash' : 'visa') as any
+        };
+        await editOrder(editingOrder.id, updatedData, editingOrder.items || [], formData.note || 'تعديل من شاشة الميزانية');
+      } else if (editingPurchase) {
+        const updatedInvoice = {
+          invoice_number: editingPurchase.invoice_number,
+          supplier_id: editingPurchase.supplier_id,
+          total: editingPurchase.total,
+          paid_amount: amountNum,
+          payment_method: (cash >= visa ? 'cash' : 'visa') as any
+        };
+        await updatePurchaseInvoice(
+          editingPurchase.id,
+          updatedInvoice,
+          editingPurchase.items || [],
+          { cash, visa, wallet, instapay: insta }
+        );
+      } else {
+        const multiplier = formData.transaction_type === 'income' ? -1 : 1;
+        const expenseData = {
+          category: formData.category,
+          amount: amountNum * multiplier,
+          paid_cash: cash * multiplier,
+          paid_visa: visa * multiplier,
+          paid_wallet: wallet * multiplier,
+          paid_instapay: insta * multiplier,
+          note: formData.note,
+          payment_method: cash >= visa ? 'cash' : 'visa'
+        };
+        await addExpense(expenseData as any);
+      }
+      setShowModal(false);
+    } catch (e: any) {
+      console.error(e);
+      alert('حدث خطأ أثناء حفظ التعديلات');
+    } finally {
+      setLoading(false);
     }
-    setShowModal(false);
+  };
+
+  const handleDeleteOrder = async (id: string) => {
+    if (confirm('هل أنت متأكد من حذف هذه المعاملة؟')) {
+      const reason = prompt('الرجاء إدخال سبب الحذف:') || 'حذف يدوي من شاشة الميزانية';
+      try {
+        setLoading(true);
+        const success = await deleteOrder(id, reason);
+        if (success) {
+          alert('تم حذف المعاملة بنجاح');
+        } else {
+          alert('حدث خطأ أثناء حذف المعاملة');
+        }
+      } catch (err: any) {
+        console.error(err);
+        alert('حدث خطأ أثناء حذف المعاملة');
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleDeletePurchase = (id: string) => {
+    if (confirm('هل أنت متأكد من حذف هذه الفاتورة؟')) {
+      deletePurchaseInvoice(id);
+    }
   };
 
   const exportToExcel = () => {
@@ -635,7 +742,7 @@ export default function Finance() {
 
         {/* Daily In */}
         <div className="bg-white p-6 rounded-[32px] border border-emerald-100 shadow-sm bg-emerald-50/20">
-          <p className="text-emerald-600 font-bold text-xs mb-1">إجمالي الداخل اليوم</p>
+          <p className="text-emerald-600 font-bold text-xs mb-1">إجمالي الداخل {filterType === 'daily' ? 'اليوم' : filterType === 'monthly' ? 'للشهر' : 'للعام'}</p>
           <h3 className="text-2xl font-black text-emerald-700">
             +{dailyIncome.toLocaleString()} <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
           </h3>
@@ -657,7 +764,7 @@ export default function Finance() {
 
         {/* Daily Out */}
         <div className="bg-white p-6 rounded-[32px] border border-red-100 shadow-sm bg-red-50/20">
-          <p className="text-red-600 font-bold text-xs mb-1">إجمالي الخارج اليوم</p>
+          <p className="text-red-600 font-bold text-xs mb-1">إجمالي الخارج {filterType === 'daily' ? 'اليوم' : filterType === 'monthly' ? 'للشهر' : 'للعام'}</p>
           <h3 className="text-2xl font-black text-red-700">
             -{ (dailyExpensesTotal + dailyPurchasesTotal + dailyReturnsValue).toLocaleString() } <span className="text-sm font-normal opacity-50">{storeSettings.currency}</span>
           </h3>
@@ -784,11 +891,29 @@ export default function Finance() {
                     <td className="p-6 text-left">
                        <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           {t.original && <button onClick={() => printTransaction(t)} className="p-2 text-slate-400 hover:text-emerald-600 transition" title="طباعة"><Printer size={16} /></button>}
+                          
+                          {/* Edit Buttons */}
                           {t.original && t.originType === 'expense' && (
                              <button onClick={() => handleOpenModal(t.original)} className="p-2 text-slate-400 hover:text-indigo-600 transition" title="تعديل"><Edit3 size={16} /></button>
                           )}
+                          {t.original && t.originType === 'order' && (
+                             <button onClick={() => handleOpenEditOrder(t.original)} className="p-2 text-slate-400 hover:text-indigo-600 transition" title="تعديل"><Edit3 size={16} /></button>
+                          )}
+                          {t.original && t.originType === 'purchase' && (
+                             <button onClick={() => handleOpenEditPurchase(t.original)} className="p-2 text-slate-400 hover:text-indigo-600 transition" title="تعديل"><Edit3 size={16} /></button>
+                          )}
+
+                          {/* Delete Buttons */}
                           {t.original && t.originType === 'expense' && (
                              <button onClick={() => deleteExpense(t.id)} className="p-2 text-slate-400 hover:text-red-500 transition" title="حذف"><Trash2 size={16} /></button>
+                          )}
+                          {t.original && t.originType === 'order' && (
+                             <button onClick={() => handleDeleteOrder(t.id)} className="p-2 text-slate-400 hover:text-red-500 transition" title="حذف"><Trash2 size={16} /></button>
+                          )}
+                          {t.original && t.originType === 'purchase' && (
+                            <button onClick={() => handleDeletePurchase(t.id)} className="p-2 text-slate-400 hover:text-red-500 transition" title="حذف">
+                              <Trash2 size={16} />
+                            </button>
                           )}
                        </div>
                     </td>
@@ -809,55 +934,82 @@ export default function Finance() {
               style={{ backgroundColor: tc }}
             >
               <div>
-                <h2 className="text-2xl font-black">{editingExpense ? 'تعديل معاملة' : 'تسجيل معاملة مالية'}</h2>
-                <p className="text-white/70 text-sm mt-1">سجل تفاصيل المصاريف أو الإيرادات الخارجية</p>
+                <h2 className="text-2xl font-black">
+                  {editingExpense && 'تعديل المعاملة المالية'}
+                  {editingOrder && 'تعديل معاملة العميل'}
+                  {editingPurchase && 'تعديل معاملة المورد'}
+                  {!editingExpense && !editingOrder && !editingPurchase && 'تسجيل معاملة مالية'}
+                </h2>
+                <p className="text-white/70 text-sm mt-1">
+                  {editingOrder || editingPurchase ? 'تعديل تفاصيل الدفع وطرق السداد لهذه المعاملة' : 'سجل تفاصيل المصاريف أو الإيرادات الخارجية'}
+                </p>
               </div>
               <button onClick={() => setShowModal(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition text-white">
                 <X size={24} />
               </button>
             </div>
             <div className="p-8 space-y-6 overflow-y-auto">
-              <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-2xl">
-                <button
-                  onClick={() => setFormData({...formData, transaction_type: 'expense'})}
-                  className={`flex-1 py-3 rounded-xl font-black text-sm transition-all ${formData.transaction_type === 'expense' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-                >
-                  مصروف
-                </button>
-                <button
-                  onClick={() => setFormData({...formData, transaction_type: 'income'})}
-                  className={`flex-1 py-3 rounded-xl font-black text-sm transition-all ${formData.transaction_type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-                >
-                  إيراد
-                </button>
-              </div>
+              {editingOrder && (
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">نوع المعاملة</label>
+                  <div className="w-full bg-slate-100 border border-slate-200 rounded-2xl p-4 font-bold text-slate-600">
+                    معاملة عميل ({editingOrder.type === 'payment' ? 'سداد مديونية' : 'فاتورة مبيعات'})
+                  </div>
+                </div>
+              )}
+              {editingPurchase && (
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">نوع المعاملة</label>
+                  <div className="w-full bg-slate-100 border border-slate-200 rounded-2xl p-4 font-bold text-slate-600">
+                    معاملة مورد ({editingPurchase.total === 0 ? 'سداد مديونية مورد' : 'فاتورة شراء'})
+                  </div>
+                </div>
+              )}
+              {!editingOrder && !editingPurchase && (
+                <>
+                  <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-2xl">
+                    <button
+                      onClick={() => setFormData({...formData, transaction_type: 'expense'})}
+                      className={`flex-1 py-3 rounded-xl font-black text-sm transition-all ${formData.transaction_type === 'expense' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      مصروف
+                    </button>
+                    <button
+                      onClick={() => setFormData({...formData, transaction_type: 'income'})}
+                      className={`flex-1 py-3 rounded-xl font-black text-sm transition-all ${formData.transaction_type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      إيراد
+                    </button>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-bold text-slate-700 mb-2">{formData.transaction_type === 'expense' ? 'فئة المصروف' : 'فئة الإيراد'}</label>
-                <select 
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 focus:ring-2 focus:ring-indigo-500/20 outline-none font-bold"
-                  value={formData.category}
-                  onChange={e => setFormData({...formData, category: e.target.value})}
-                >
-                  {formData.transaction_type === 'expense' ? (
-                    <>
-                      <option value="عام">عام</option>
-                      <option value="إيجار">إيجار</option>
-                      <option value="كهرباء/مياه">كهرباء / مياه</option>
-                      <option value="رواتب">رواتب</option>
-                      <option value="نقل/توصيل">نقل / توصيل</option>
-                      <option value="صيانة">صيانة</option>
-                    </>
-                  ) : (
-                    <>
-                      <option value="عام">إيراد عام</option>
-                      <option value="خدمات">خدمات إضافية</option>
-                      <option value="استثمار">عائد استثمار</option>
-                      <option value="أخرى">أخرى</option>
-                    </>
-                  )}
-                </select>
-              </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2">{formData.transaction_type === 'expense' ? 'فئة المصروف' : 'فئة الإيراد'}</label>
+                    <select 
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 focus:ring-2 focus:ring-indigo-500/20 outline-none font-bold"
+                      value={formData.category}
+                      onChange={e => setFormData({...formData, category: e.target.value})}
+                    >
+                      {formData.transaction_type === 'expense' ? (
+                        <>
+                          <option value="عام">عام</option>
+                          <option value="إيجار">إيجار</option>
+                          <option value="كهرباء/مياه">كهرباء / مياه</option>
+                          <option value="رواتب">رواتب</option>
+                          <option value="نقل/توصيل">نقل / توصيل</option>
+                          <option value="صيانة">صيانة</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="عام">إيراد عام</option>
+                          <option value="خدمات">خدمات إضافية</option>
+                          <option value="استثمار">عائد استثمار</option>
+                          <option value="أخرى">أخرى</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                </>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -900,7 +1052,9 @@ export default function Finance() {
 
               <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 flex justify-between items-center">
                 <span className="text-sm font-bold text-slate-500">إجمالي المبلغ:</span>
-                <span className={`text-2xl font-black ${formData.transaction_type === 'income' ? 'text-emerald-600' : 'text-red-600'}`}>
+                <span className={`text-2xl font-black ${
+                  (editingOrder || (formData.transaction_type === 'income' && !editingPurchase)) ? 'text-emerald-600' : 'text-red-600'
+                }`}>
                   {((parseFloat(formData.paid_cash) || 0) + (parseFloat(formData.paid_visa) || 0) + (parseFloat(formData.paid_wallet) || 0) + (parseFloat(formData.paid_instapay) || 0)).toLocaleString()} {storeSettings.currency}
                 </span>
               </div>
@@ -916,10 +1070,11 @@ export default function Finance() {
               </div>
               <button 
                 onClick={handleSubmit}
+                disabled={loading}
                 style={{ backgroundColor: tc }}
-                className="w-full text-white py-5 rounded-2xl font-black text-lg shadow-xl hover:opacity-90 transition-all flex items-center justify-center gap-3"
+                className="w-full text-white py-5 rounded-2xl font-black text-lg shadow-xl hover:opacity-90 transition-all flex items-center justify-center gap-3 disabled:opacity-55"
               >
-                {editingExpense ? 'حفظ التعديلات' : 'إضافة العملية'}
+                {loading ? 'جاري الحفظ...' : ((editingExpense || editingOrder || editingPurchase) ? 'حفظ التعديلات' : 'إضافة العملية')}
               </button>
             </div>
           </div>

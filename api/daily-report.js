@@ -7,12 +7,18 @@ import {
   money,
   productSalesStats,
   sendTelegramText,
+  fetchOpeningBalance,
 } from './_report-utils.js';
 
-export function buildDailyMessage(settings, range, data) {
+export function buildDailyMessage(settings, range, data, openingBalance) {
   const stats = buildFinancialStats(data);
   const currency = settings.currency;
-  const netCash = stats.totalRevenue - stats.totalExpense;
+  
+  const totalCashIn = stats.totalRevenue;
+  const totalCashOut = stats.totalExpense;
+  const netCash = totalCashIn - totalCashOut;
+  const closingBalance = openingBalance + netCash;
+
   const topProducts = productSalesStats(stats.salesOrders)
     .sort((a, b) => b.qty - a.qty)
     .slice(0, 5);
@@ -21,20 +27,25 @@ export function buildDailyMessage(settings, range, data) {
     `تقرير نهاية اليوم - ${settings.name}`,
     `الفترة: ${range.label}`,
     '',
-    'ملخص مالي:',
-    `إجمالي الإيرادات: ${money(stats.totalRevenue, currency)}`,
+    'حركة الخزينة:',
+    `الرصيد الافتتاحي: ${money(openingBalance, currency)}`,
+    `إجمالي الداخل: ${money(totalCashIn, currency)}`,
+    `إجمالي الخارج: ${money(totalCashOut, currency)}`,
+    `رصيد الإغلاق: ${money(closingBalance, currency)}`,
+    '',
+    'تفاصيل الإيرادات:',
     `- مبيعات مدفوعة: ${money(stats.salesRevenue, currency)}`,
     `- تحصيلات عملاء: ${money(stats.customerPayments, currency)}`,
     `- إيرادات أخرى: ${money(stats.manualRevenue, currency)}`,
     '',
-    `إجمالي المصروفات والمدفوعات: ${money(stats.totalExpense, currency)}`,
+    'تفاصيل المصروفات والمدفوعات:',
     `- مصروفات مباشرة: ${money(stats.manualExpenses, currency)}`,
     `- مشتريات وسداد موردين: ${money(stats.purchasePayments, currency)}`,
     `- رواتب/سلف موظفين: ${money(stats.payroll, currency)}`,
     `- مرتجعات عملاء: ${money(stats.customerRefunds, currency)}`,
     '',
     `صافي حركة اليوم: ${money(netCash, currency)}`,
-    `ربح الفواتير التقريبي: ${money(stats.invoiceProfit, currency)}`,
+    `إجمالي الربح من الفواتير: ${money(stats.invoiceProfit, currency)}`,
     '',
     'حركة الفواتير:',
     `فواتير بيع: ${stats.salesOrders.length}`,
@@ -62,11 +73,14 @@ export default async function handler(req, res) {
   try {
     const supabase = getSupabase();
     const range = cairoDayRange(new Date());
-    const [settings, data] = await Promise.all([
+    
+    const [settings, data, openingBalance] = await Promise.all([
       fetchStoreSettings(supabase),
       fetchReportData(supabase, range.start, range.end),
+      fetchOpeningBalance(supabase, range.start)
     ]);
-    const result = await sendTelegramText(buildDailyMessage(settings, range, data));
+    
+    const result = await sendTelegramText(buildDailyMessage(settings, range, data, openingBalance));
     return res.status(200).json({ ok: true, result });
   } catch (error) {
     return res.status(500).json({ ok: false, error: String(error) });

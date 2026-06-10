@@ -71,6 +71,7 @@ export interface PurchaseInvoice {
   paid_instapay: number;
   payment_method: 'cash' | 'visa' | 'wallet' | 'instapay';
   created_at: string;
+  notes?: string;
   items?: PurchaseItem[];
 }
 
@@ -93,6 +94,8 @@ export interface Order {
   deleted_at?: string | null;
   deletion_reason?: string | null;
   notes?: string | null;
+  coupon_code?: string | null;
+  discount_amount?: number;
 }
 
 export interface Expense {
@@ -214,6 +217,20 @@ export interface ProductSuggestion {
   created_at: string;
 }
 
+export interface Coupon {
+  id: string;
+  code: string;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: number;
+  start_date: string | null;
+  end_date: string | null;
+  max_uses_per_customer: number | null;
+  max_uses_total: number | null;
+  used_count: number;
+  is_active: boolean;
+  created_at: string;
+}
+
 export interface CashierNote {
   id: string;
   cashier_name: string;
@@ -237,6 +254,7 @@ interface CashierStore {
   financingPayments: FinancingPayment[];
   financingTransactions: FinancingTransaction[];
   purchaseInvoices: PurchaseInvoice[];
+  coupons: Coupon[];
   invoiceCounter: number;
   activeInvoiceId: string;
   isLoading: boolean;
@@ -269,7 +287,9 @@ interface CashierStore {
     paymentMethod?: string,
     splitPayments?: { cash: number; visa: number; wallet: number; instapay: number },
     cashierName?: string,
-    notes?: string
+    notes?: string,
+    couponCode?: string,
+    discountAmount?: number
   ) => Promise<string>;
   payInvoiceDebt: (
     invoiceId: string, 
@@ -277,8 +297,8 @@ interface CashierStore {
     amount: number, 
     splitPayments?: { cash: number; visa: number; wallet: number; instapay: number },
     paymentMethod?: string
-  ) => Promise<void>;
-  processReturn: (orderId: string, returns: { productId: string, returnQty: number, refundAmount: number }[]) => Promise<boolean>;
+  ) => Promise<string | null | void>;
+  processReturn: (orderId: string, returns: { productId: string, returnQty: number, refundAmount: number, debtDeduction?: number }[]) => Promise<boolean>;
   deleteOrder: (orderId: string, reason?: string) => Promise<boolean>;
   editOrder: (orderId: string, updatedData: Partial<Order>, updatedItems: OrderItem[], reason: string) => Promise<boolean>;
 
@@ -286,7 +306,7 @@ interface CashierStore {
   // Admin
   loadAnalyticsData: (startDate?: string, endDate?: string) => Promise<Order[]>;
   updateSettings: (settings: Partial<StoreSettings>) => Promise<void>;
-  addProduct: (product: Omit<Product, 'id'>) => Promise<void>;
+  addProduct: (product: Omit<Product, 'id'>) => Promise<Product | undefined>;
   updateProduct: (id: string, product: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
   
@@ -317,6 +337,14 @@ interface CashierStore {
   addCashier: (cashier: Omit<Cashier, 'id' | 'created_at'>) => Promise<void>;
   updateCashier: (id: string, cashier: Partial<Cashier>) => Promise<void>;
   deleteCashier: (id: string) => Promise<void>;
+  deleteCashierNote: (id: string) => Promise<void>;
+
+  // Coupons
+  loadCoupons: () => Promise<void>;
+  addCoupon: (coupon: Omit<Coupon, 'id' | 'created_at' | 'used_count'>) => Promise<void>;
+  updateCoupon: (id: string, updates: Partial<Coupon>) => Promise<void>;
+  deleteCoupon: (id: string) => Promise<void>;
+  incrementCouponUsage: (code: string) => Promise<void>;
 
   // Employees
   loadEmployees: () => Promise<void>;
@@ -349,9 +377,10 @@ interface CashierStore {
   updatePurchaseInvoice: (
     invoiceId: string,
     invoice: Omit<PurchaseInvoice, 'id' | 'created_at' | 'items' | 'paid_cash' | 'paid_visa' | 'paid_wallet' | 'paid_instapay'>, 
-    items: PurchaseItem[],
+      items: PurchaseItem[],
     splitPayments?: { cash: number; visa: number; wallet: number; instapay: number }
   ) => Promise<void>;
+  deletePurchaseInvoice: (id: string) => Promise<void>;
   paySupplierDebt: (supplierId: string, amount: number, splitPayments?: { cash: number; visa: number; wallet: number; instapay: number }) => Promise<void>;
 
   // Realtime
@@ -492,6 +521,7 @@ export const useStore = create<CashierStore>((set, get) => ({
   employeeLeaves: [],
   productSuggestions: [],
   cashierNotes: [],
+  coupons: [],
   invoiceCounter: 1,
   activeInvoiceId: '1',
   isLoading: false,
@@ -682,6 +712,7 @@ export const useStore = create<CashierStore>((set, get) => ({
       get().loadFinancing();
       get().loadProductSuggestions();
       get().loadCashierNotes();
+      get().loadCoupons();
 
       // Setup Realtime subscriptions
       get().setupRealtime();
@@ -818,6 +849,8 @@ export const useStore = create<CashierStore>((set, get) => ({
           customer_id: customerId,
           payment_method: offlineOrder.payment_method,
           cashier_name: offlineOrder.cashier_name,
+          coupon_code: offlineOrder.coupon_code || null,
+          discount_amount: offlineOrder.discount_amount || 0,
           created_at: offlineOrder.date
         });
 
@@ -897,7 +930,7 @@ export const useStore = create<CashierStore>((set, get) => ({
   clearCart: () => set({ cart: [] }),
 
   // ── Checkout ───────────────────────────────────────────────
-  checkout: async (total, customerDetails, paidAmount = total, type = 'sale', paymentMethod = 'cash', splitPayments, cashierName, notes) => {
+  checkout: async (total, customerDetails, paidAmount = total, type = 'sale', paymentMethod = 'cash', splitPayments, cashierName, notes, couponCode, discountAmount) => {
     const state = get();
     const finalCashierName = cashierName || state.activeCashier?.name || 'مدير النظام';
     if (state.cart.length === 0 && type !== 'payment' && type !== 'previous_debt') return state.activeInvoiceId;
@@ -947,6 +980,8 @@ export const useStore = create<CashierStore>((set, get) => ({
         customer: finalCustomer,
         cashier_name: finalCashierName,
         notes: notes || null,
+        coupon_code: couponCode || null,
+        discount_amount: discountAmount || 0,
         items: state.cart.map((i) => ({ ...i })),
         isOffline: true
       };
@@ -1060,7 +1095,9 @@ export const useStore = create<CashierStore>((set, get) => ({
         customer_id: customerId,
         payment_method: paymentMethod,
         cashier_name: finalCashierName,
-        notes: notes || null
+        notes: notes || null,
+        coupon_code: couponCode || null,
+        discount_amount: discountAmount || 0
       });
 
       if (orderError) {
@@ -1161,11 +1198,18 @@ export const useStore = create<CashierStore>((set, get) => ({
     const invoice = state.orders.find(o => o.id === invoiceId);
     if (!invoice) return;
 
+    // Validate: don't accept more than what's owed
+    const currentDebt = invoice.total - (invoice.paid_amount || 0);
+    if (amount > currentDebt + 0.01) {
+      alert(`المبلغ المدخل (${amount.toFixed(2)}) أكبر من المديونية المتبقية (${currentDebt.toFixed(2)})`);
+      return;
+    }
+
     try {
       const { supabase } = await import('../lib/supabase');
       
       // 1. Update the original invoice
-      const newPaidAmount = (invoice.paid_amount || 0) + amount;
+      const newPaidAmount = Math.min(invoice.total, (invoice.paid_amount || 0) + amount);
       const { error: updateError } = await supabase
         .from('orders')
         .update({ paid_amount: newPaidAmount })
@@ -1178,7 +1222,7 @@ export const useStore = create<CashierStore>((set, get) => ({
       const cashierName = state.activeCashier?.name || 'مدير النظام';
       const remainingDebt = invoice.total - newPaidAmount;
       const debtBefore = remainingDebt + amount;
-      const note = `سداد أجل للفاتورة رقم #${invoiceId} | المديونية قبل: ${debtBefore.toFixed(2)} | المتبقي: ${remainingDebt.toFixed(2)}`;
+      const note = `سداد أجل للفاتورة رقم #${invoiceId}${invoice.notes ? ` | الوصف: ${invoice.notes}` : ''} | المديونية قبل: ${debtBefore.toFixed(2)} | المتبقي: ${remainingDebt.toFixed(2)}`;
 
       const paymentOrder = {
         id: paymentId,
@@ -1216,9 +1260,11 @@ export const useStore = create<CashierStore>((set, get) => ({
         ]
       });
 
+      return paymentId;
     } catch (err) {
       console.error("Failed to pay invoice debt:", err);
       alert("حدث خطأ أثناء سداد المديونية.");
+      return null;
     }
   },
 
@@ -1242,8 +1288,14 @@ export const useStore = create<CashierStore>((set, get) => ({
         );
       }
 
+      // Handle paid_amount adjustments based on cash refunded
+      const offlineRefundAmount = returns.reduce((sum, ret) => sum + (ret.refundAmount || 0), 0);
+      const offlinePaidAmount = offlineRefundAmount > 0 
+        ? (order.paid_amount || 0) - offlineRefundAmount
+        : order.paid_amount;
+
       const updatedOrders = state.orders.map((o, idx) =>
-        idx === orderIndex ? { ...o, items: updatedItems } : o
+        idx === orderIndex ? { ...o, items: updatedItems, paid_amount: offlinePaidAmount } : o
       );
 
       if (orderId.startsWith('OFF-')) {
@@ -1339,8 +1391,23 @@ export const useStore = create<CashierStore>((set, get) => ({
         );
       }
 
+      // Handle paid_amount adjustments based on cash refunded
+      const totalRefundAmount = returns.reduce((sum, ret) => sum + (ret.refundAmount || 0), 0);
+      let finalPaidAmount = order.paid_amount || 0;
+      
+      if (totalRefundAmount > 0) {
+        finalPaidAmount = finalPaidAmount - totalRefundAmount;
+        const { error: paidError } = await supabase
+          .from('orders')
+          .update({ paid_amount: finalPaidAmount })
+          .eq('id', orderId);
+        if (paidError) {
+          console.error('Failed to update paid_amount for cash refund:', paidError);
+        }
+      }
+
       const updatedOrders = state.orders.map((o, idx) =>
-        idx === orderIndex ? { ...o, items: updatedItems } : o
+        idx === orderIndex ? { ...o, items: updatedItems, paid_amount: finalPaidAmount } : o
       );
 
       set({ orders: updatedOrders, products: updatedProducts });
@@ -1757,6 +1824,66 @@ export const useStore = create<CashierStore>((set, get) => ({
     set((state) => ({ cashiers: state.cashiers.filter((c) => c.id !== id) }));
   },
 
+  deleteCashierNote: async (id) => {
+    await supabase.from('cashier_notes').delete().eq('id', id);
+    set((state) => ({ cashierNotes: state.cashierNotes.filter((n) => n.id !== id) }));
+  },
+
+  // Coupons
+  loadCoupons: async () => {
+    try {
+      const { data, error } = await supabase.from('coupons').select('*').order('created_at', { ascending: false });
+      if (error) {
+        // Fallback or ignore if table doesn't exist yet
+        console.warn('Could not load coupons', error);
+        return;
+      }
+      if (data) {
+        set({ coupons: data });
+      }
+    } catch (e) {
+      console.warn('Coupons fetch error:', e);
+    }
+  },
+
+  addCoupon: async (coupon) => {
+    const { data, error } = await supabase.from('coupons').insert({
+      ...coupon,
+      used_count: 0
+    }).select().single();
+    
+    if (error) throw error;
+    if (data) {
+      set((state) => ({ coupons: [data, ...state.coupons] }));
+    }
+  },
+
+  updateCoupon: async (id, updates) => {
+    const { data, error } = await supabase.from('coupons').update(updates).eq('id', id).select().single();
+    if (error) throw error;
+    if (data) {
+      set((state) => ({ coupons: state.coupons.map((c) => (c.id === id ? data : c)) }));
+    }
+  },
+
+  deleteCoupon: async (id) => {
+    const { error } = await supabase.from('coupons').delete().eq('id', id);
+    if (error) throw error;
+    set((state) => ({ coupons: state.coupons.filter((c) => c.id !== id) }));
+  },
+
+  incrementCouponUsage: async (code) => {
+    const state = get();
+    const coupon = state.coupons.find(c => c.code === code);
+    if (!coupon) return;
+    
+    const newCount = coupon.used_count + 1;
+    await supabase.from('coupons').update({ used_count: newCount }).eq('code', code);
+    set((state) => ({
+      coupons: state.coupons.map(c => c.code === code ? { ...c, used_count: newCount } : c)
+    }));
+  },
+
   updateSettings: async (newSettings) => {
     const mapped: Record<string, unknown> = {};
     if (newSettings.name !== undefined) mapped.name = newSettings.name;
@@ -1951,15 +2078,27 @@ setupRealtime: () => {
       supabase.removeChannel(channel);
     };
   },
-
   addProduct: async (product) => {
-    // Realtime subscription handles the live INSERT — no need to broadcast
-    await supabase.from('products').insert(product);
+    const { data, error } = await supabase.from('products').insert(product).select().single();
+    if (error) {
+      console.error("Error adding product:", error);
+      throw error;
+    }
+    // Optimistic update to avoid race conditions with UI
+    if (data) {
+      set((state) => {
+        const exists = state.products.some(p => p.id === data.id);
+        if (!exists) {
+          return { products: [...state.products, data as Product] };
+        }
+        return state;
+      });
+      return data as Product;
+    }
   },
-
   updateProduct: async (id, updated) => {
     // Realtime subscription handles the live UPDATE — no need to broadcast
-    await supabase.from('products').update(updated).eq('id', id);
+    set((state) => ({ products: state.products.map(p => p.id === id ? { ...p, ...updated } : p) })); await supabase.from('products').update(updated).eq('id', id);
   },
 
   deleteProduct: async (id) => {
@@ -2512,12 +2651,51 @@ setupRealtime: () => {
       products: updatedProducts
     });
 
-    new BroadcastChannel('cashier-sync').postMessage('sync_products');
+   new BroadcastChannel('cashier-sync').postMessage('sync_products');
+  },
+
+  deletePurchaseInvoice: async (id) => {
+    try {
+      const state = get();
+      const invoice = state.purchaseInvoices.find(inv => inv.id === id);
+      const supplierName = invoice ? state.suppliers.find(s => s.id === invoice.supplier_id)?.name : 'مورد';
+
+      // Delete purchase items first
+      await supabase.from('purchase_items').delete().eq('invoice_id', id);
+      // Delete the invoice
+      const { error } = await supabase.from('purchase_invoices').delete().eq('id', id);
+      if (error) throw error;
+      set((state) => ({
+        purchaseInvoices: state.purchaseInvoices.filter(inv => inv.id !== id)
+      }));
+
+      sendTelegramAlert({
+        type: 'delete_purchase_invoice',
+        actor: getActorName(state),
+        currency: state.storeSettings.currency,
+        invoiceId: id,
+        supplier: supplierName || 'مورد',
+        date: new Date().toISOString(),
+        total: invoice?.total || 0,
+        paid: invoice?.paid_amount || 0
+      });
+    } catch (e) {
+      console.error('Delete Purchase Invoice Error:', e);
+      alert('حدث خطأ أثناء حذف الفاتورة');
+    }
   },
 
   paySupplierDebt: async (supplierId, amount, splitPayments) => {
     const state = get();
     const invoiceNumber = `PAY-${Date.now()}`;
+
+    // Validate: don't accept more than what's owed to this supplier
+    const supplierInvoices = state.purchaseInvoices.filter(inv => inv.supplier_id === supplierId);
+    const totalSupplierDebt = supplierInvoices.reduce((sum, inv) => sum + (inv.total - inv.paid_amount), 0);
+    if (amount > totalSupplierDebt + 0.01) {
+      alert(`المبلغ المدخل (${amount.toFixed(2)}) أكبر من إجمالي مديونية المورد (${Math.max(0, totalSupplierDebt).toFixed(2)})`);
+      return;
+    }
     
     try {
       const { data, error } = await supabase
@@ -2802,14 +2980,16 @@ setupRealtime: () => {
   },
   addProductSuggestion: async (name, notes) => {
     try {
-      const { error } = await supabase.from('product_suggestions').insert({ name, notes });
+      const { data, error } = await supabase.from('product_suggestions').insert({ name, notes }).select().single();
       if (error) console.error("Error adding product suggestion:", error);
+      if (data) set((state) => ({ productSuggestions: [data as ProductSuggestion, ...state.productSuggestions] }));
     } catch (e) {
       console.error("Error adding product suggestion:", e);
     }
   },
   markSuggestionAsPurchased: async (id) => {
     try {
+      set((state) => ({ productSuggestions: state.productSuggestions.map(s => s.id === id ? { ...s, is_purchased: true } : s) }));
       const { error } = await supabase.from('product_suggestions').update({ is_purchased: true }).eq('id', id);
       if (error) console.error("Error updating product suggestion:", error);
     } catch (e) {
@@ -2818,6 +2998,7 @@ setupRealtime: () => {
   },
   deleteProductSuggestion: async (id) => {
     try {
+      set((state) => ({ productSuggestions: state.productSuggestions.filter(s => s.id !== id) }));
       const { error } = await supabase.from('product_suggestions').delete().eq('id', id);
       if (error) console.error("Error deleting product suggestion:", error);
     } catch (e) {

@@ -120,6 +120,37 @@ export async function fetchReportData(supabase, start, end) {
   };
 }
 
+export async function fetchOpeningBalance(supabase, start) {
+  const [ordersRes, expensesRes, purchasesRes, payrollRes] = await Promise.all([
+    supabase.from('orders').select('paid_amount, is_deleted, order_items(refunded_amount)').lt('created_at', start.toISOString()),
+    supabase.from('expenses').select('amount').lt('created_at', start.toISOString()),
+    supabase.from('purchase_invoices').select('paid_amount').lt('created_at', start.toISOString()),
+    supabase.from('employee_transactions').select('amount').lt('created_at', start.toISOString())
+  ]);
+
+  const pastOrders = ordersRes.data || [];
+  const pastExpenses = expensesRes.data || [];
+  const pastPurchases = purchasesRes.data || [];
+  const pastPayroll = payrollRes.data || [];
+
+  const totalSalesRevenue = pastOrders.filter(o => !o.is_deleted).reduce((sum, o) => sum + Number(o.paid_amount || 0), 0);
+  
+  const totalRefunds = pastOrders.reduce((sum, o) => {
+    return sum + (o.order_items || []).reduce((itemSum, item) => itemSum + Number(item.refunded_amount || 0), 0);
+  }, 0);
+
+  // Expenses < 0 are revenues, Expenses > 0 are expenses
+  // When we sum all expenses, revenues reduce the total expense
+  const totalExpenseEntries = pastExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const totalPurchases = pastPurchases.reduce((sum, p) => sum + Number(p.paid_amount || 0), 0);
+  const totalPayroll = pastPayroll.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+  const totalRevenue = totalSalesRevenue;
+  const totalExpense = totalExpenseEntries + totalPurchases + totalPayroll + totalRefunds;
+
+  return totalRevenue - totalExpense;
+}
+
 export function calculateInvoiceProfit(order) {
   if (!order || order.type === 'payment' || order.is_deleted) return 0;
   return (order.order_items || []).reduce((sum, item) => {

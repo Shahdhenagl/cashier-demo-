@@ -14,11 +14,13 @@ import DeferredAccounts from './pages/admin/DeferredAccounts';
 import Settings from './pages/admin/Settings';
 import Analytics from './pages/admin/Analytics';
 import Finance from './pages/admin/Finance';
+import OfflineInvoices from './pages/admin/OfflineInvoices';
 import Cashiers from './pages/admin/Cashiers';
 import Employees from './pages/admin/Employees';
 import Budget from './pages/admin/Budget';
 import Financing from './pages/admin/Financing';
 import StockAlerts from './pages/admin/StockAlerts';
+import Coupons from './pages/admin/Coupons';
 import PublicInvoice from './pages/PublicInvoice';
 import { useStore } from './store/useStore';
 
@@ -174,6 +176,8 @@ function App() {
             <Route path="deferred" element={<DeferredAccounts />} />
             <Route path="finance" element={<Finance />} />
             <Route path="financing" element={<Financing />} />
+            <Route path="offline-invoices" element={<OfflineInvoices />} />
+            <Route path="coupons" element={<Coupons />} />
             <Route path="employees" element={<Employees />} />
             <Route path="stock-alerts" element={<StockAlerts />} />
             <Route path="budget" element={<Budget />} />

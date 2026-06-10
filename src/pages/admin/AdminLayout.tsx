@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Package, Settings, LogOut, FileText, Users, BookUser, BarChart3, Wallet, Activity, MessageCircle, Landmark, AlertTriangle } from 'lucide-react';
+import { LayoutDashboard, Package, Settings, LogOut, FileText, Users, BarChart3, Wallet, MessageCircle, CreditCard, Building2, BellRing, WifiOff, Ticket, PieChart } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 
 export default function AdminLayout() {
@@ -14,13 +14,15 @@ export default function AdminLayout() {
     { name: 'قاعدة العملاء', path: '/admin/customers', icon: Users },
     { name: 'حملات واتساب', path: '/admin/whatsapp-campaigns', icon: MessageCircle },
     { name: 'الموردين والمشتريات', path: '/admin/suppliers', icon: Users },
-    { name: 'حسابات الآجل', path: '/admin/deferred', icon: BookUser },
+    { name: 'حسابات الآجل', path: '/admin/deferred', icon: CreditCard },
     { name: 'إدارة المحاسبين', path: '/admin/cashiers', icon: Users },
     { name: 'الرواتب والموظفين', path: '/admin/employees', icon: Users },
-    { name: 'نواقص ومقترحات', path: '/admin/stock-alerts', icon: AlertTriangle },
     { name: 'الخزينة والمصاريف', path: '/admin/finance', icon: Wallet },
-    { name: 'السلف والجمعيات', path: '/admin/financing', icon: Landmark },
-    { name: 'الميزانية', path: '/admin/budget', icon: Activity },
+    { name: 'سلف وتمويل', path: '/admin/financing', icon: Building2 },
+    { name: 'الميزانية العامة', path: '/admin/budget', icon: PieChart },
+    { name: 'الفواتير الأوفلاين', path: '/admin/offline-invoices', icon: WifiOff },
+    { name: 'كوبونات الخصم', path: '/admin/coupons', icon: Ticket },
+    { name: 'تنبيهات النواقص', path: '/admin/stock-alerts', icon: BellRing },
     { name: 'إعدادات النظام', path: '/admin/settings', icon: Settings },
   ];
 
